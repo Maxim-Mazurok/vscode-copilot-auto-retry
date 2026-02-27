@@ -1,0 +1,108 @@
+{
+  "name": "vscode-copilot-auto-retry",
+  "displayName": "Copilot Auto-Retry",
+  "description": "Lightweight resilience layer that automatically retries transient Copilot failures with exponential backoff",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "icon": "assets/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/local/vscode-copilot-auto-retry"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Copilot Auto-Retry",
+      "properties": {
+        "copilotAutoRetry.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic retry of transient Copilot failures"
+        },
+        "copilotAutoRetry.maxRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Maximum number of retry attempts per failure event"
+        },
+        "copilotAutoRetry.baseDelayMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "maximum": 15000,
+          "description": "Base delay in milliseconds before first retry (doubles on each subsequent attempt)"
+        },
+        "copilotAutoRetry.maxDelayMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 5000,
+          "maximum": 120000,
+          "description": "Maximum delay cap in milliseconds for exponential backoff"
+        },
+        "copilotAutoRetry.healthPollIntervalMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 2000,
+          "maximum": 60000,
+          "description": "Interval in milliseconds between Copilot health checks"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "copilotAutoRetry.enable",
+        "title": "Copilot Auto-Retry: Enable"
+      },
+      {
+        "command": "copilotAutoRetry.disable",
+        "title": "Copilot Auto-Retry: Disable"
+      },
+      {
+        "command": "copilotAutoRetry.toggleEnabled",
+        "title": "Copilot Auto-Retry: Toggle Enabled"
+      },
+      {
+        "command": "copilotAutoRetry.showStatus",
+        "title": "Copilot Auto-Retry: Show Status"
+      },
+      {
+        "command": "copilotAutoRetry.retryNow",
+        "title": "Copilot Auto-Retry: Retry Now"
+      },
+      {
+        "command": "copilotAutoRetry.simulateError",
+        "title": "Copilot Auto-Retry: [Dev] Simulate Rate-Limit Error"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "copilotAutoRetry.retryNow",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "chatIsVisible"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "npx -y eslint src --ext ts",
+    "package": "npx -y @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.7.0"
+  }
+}
