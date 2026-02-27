@@ -4,12 +4,10 @@
   <img src="assets/icon.png" alt="Copilot Auto-Retry logo" width="128">
 </p>
 
-<!-- Replace "PUBLISHER" with your actual VS Code Marketplace publisher ID in badge URLs below -->
-
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/PUBLISHER.vscode-copilot-auto-retry?label=VS%20Code%20Marketplace&logo=visual-studio-code&color=blue)](https://marketplace.visualstudio.com/items?itemName=PUBLISHER.vscode-copilot-auto-retry)
-[![Installs](https://img.shields.io/visual-studio-marketplace/i/PUBLISHER.vscode-copilot-auto-retry?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=PUBLISHER.vscode-copilot-auto-retry)
-[![Rating](https://img.shields.io/visual-studio-marketplace/r/PUBLISHER.vscode-copilot-auto-retry?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=PUBLISHER.vscode-copilot-auto-retry)
-[![Open VSX](https://img.shields.io/open-vsx/v/PUBLISHER/vscode-copilot-auto-retry?label=Open%20VSX&color=purple)](https://open-vsx.org/extension/PUBLISHER/vscode-copilot-auto-retry)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/MaximMazurok.vscode-copilot-auto-retry?label=VS%20Code%20Marketplace&logo=visual-studio-code&color=blue)](https://marketplace.visualstudio.com/items?itemName=MaximMazurok.vscode-copilot-auto-retry)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/MaximMazurok.vscode-copilot-auto-retry?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=MaximMazurok.vscode-copilot-auto-retry)
+[![Rating](https://img.shields.io/visual-studio-marketplace/r/MaximMazurok.vscode-copilot-auto-retry?logo=visual-studio-code)](https://marketplace.visualstudio.com/items?itemName=MaximMazurok.vscode-copilot-auto-retry)
+[![Open VSX](https://img.shields.io/open-vsx/v/MaximMazurok/vscode-copilot-auto-retry?label=Open%20VSX&color=purple)](https://open-vsx.org/extension/MaximMazurok/vscode-copilot-auto-retry)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **Automatically retries transient GitHub Copilot failures** — rate limits, network errors, and service disruptions — so you don't have to sit and click "Try Again" manually.
@@ -40,13 +38,13 @@ This extension **does that for you**, automatically, with exponential backoff �
 
 ### VS Code Marketplace
 
-**[Install from VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=PUBLISHER.vscode-copilot-auto-retry)**
+**[Install from VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=MaximMazurok.vscode-copilot-auto-retry)**
 
 Or search for **"Copilot Auto-Retry"** in the VS Code Extensions view (`Cmd+Shift+X` / `Ctrl+Shift+X`).
 
 ### Open VSX (for VS Codium, Gitpod, Theia, etc.)
 
-**[Install from Open VSX](https://open-vsx.org/extension/PUBLISHER/vscode-copilot-auto-retry)**
+**[Install from Open VSX](https://open-vsx.org/extension/MaximMazurok/vscode-copilot-auto-retry)**
 
 ### Manual Install
 
@@ -140,4 +138,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture details, design decision
 
 ---
 
-<sub>This extension was AI-generated with Claude Opus 4.6 (Anthropic) under human supervision by [Max Mazurok](https://github.com/nicl-mazurok).</sub>
+<sub>This extension was AI-generated with Claude Opus 4.6 (Anthropic) under human supervision by [Max Mazurok](https://github.com/Maxim-Mazurok).</sub>
