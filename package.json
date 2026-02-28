@@ -2,7 +2,7 @@
   "name": "vscode-copilot-auto-retry",
   "displayName": "Copilot Auto-Retry",
   "description": "Lightweight resilience layer that automatically retries transient Copilot failures with exponential backoff",
-  "version": "0.2.3",
+  "version": "0.3.1",
   "publisher": "MaximMazurok",
   "license": "MIT",
   "icon": "assets/icon.png",
@@ -49,13 +49,6 @@
           "minimum": 5000,
           "maximum": 120000,
           "description": "Maximum delay cap in milliseconds for exponential backoff"
-        },
-        "copilotAutoRetry.healthPollIntervalMs": {
-          "type": "number",
-          "default": 5000,
-          "minimum": 2000,
-          "maximum": 60000,
-          "description": "Interval in milliseconds between Copilot health checks"
         }
       }
     },
@@ -98,12 +91,15 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "test": "npx -y vitest run",
+    "test:watch": "npx -y vitest",
     "lint": "npx -y eslint src --ext ts",
     "package": "npx -y @vscode/vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/vscode": "^1.90.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
   }
 }

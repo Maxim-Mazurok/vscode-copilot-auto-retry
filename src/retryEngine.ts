@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { readConfig } from "./configuration";
 import { Guardrails } from "./guardrails";
-import { DetectedError } from "./errorDetector";
+import { ActiveSessionResolver } from "./activeSessionResolver";
+import { SessionError } from "./sessionWatcher";
 
 /**
  * Manages retry attempts for detected Copilot errors using exponential backoff.
@@ -24,6 +25,13 @@ import { DetectedError } from "./errorDetector";
  * This preserves the full conversation context (the AI sees the failed
  * request + error in history) and costs one extra turn, but actually triggers
  * a real LLM call — unlike the no-op command.
+ *
+ * ## Error detection
+ *
+ * Errors are detected by the SessionWatcher, which monitors chat session
+ * JSONL files on disk for `errorDetails` in request results. This gives us
+ * direct visibility into whether a conversation actually has a failed
+ * response — no more guessing from service-level health signals.
  */
 
 const RETRY_PROMPT =
@@ -40,8 +48,29 @@ export type RetryEngineState =
   | "cooldown"
   | "disabled";
 
+/**
+ * Describes the trigger source for a retry cycle.
+ * Can come from session file error detection or network recovery.
+ */
+export interface RetryTrigger {
+  /** What caused the retry ("session-error" or "network-recovery"). */
+  source: "session-error" | "network-recovery" | "manual";
+  /** Copilot error code from the session file (e.g., "networkError"). */
+  errorCode?: string;
+  /**
+   * The session file ID (UUID) where the error was detected.
+   * Used to verify the errored session is still the active one before retrying.
+   * Only present for "session-error" triggers.
+   */
+  sessionId?: string;
+  /** Human-readable detail about the trigger. */
+  detail: string;
+  /** When the trigger was created. */
+  timestamp: number;
+}
+
 interface ActiveRetryCycle {
-  error: DetectedError;
+  trigger: RetryTrigger;
   attemptNumber: number;
   maxAttempts: number;
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -58,6 +87,7 @@ export class RetryEngine implements vscode.Disposable {
   constructor(
     private readonly logger: Logger,
     private readonly guardrails: Guardrails,
+    private readonly activeSessionResolver?: ActiveSessionResolver,
   ) {}
 
   /**
@@ -82,14 +112,49 @@ export class RetryEngine implements vscode.Disposable {
   }
 
   /**
-   * Trigger a retry cycle for a detected error.
-   * If a cycle is already active, the new error is ignored (debounce).
+   * Create a RetryTrigger from a SessionError detected by the session watcher.
    */
-  async triggerRetryCycle(error: DetectedError): Promise<void> {
+  static triggerFromSessionError(sessionError: SessionError): RetryTrigger {
+    return {
+      source: "session-error",
+      errorCode: sessionError.errorCode,
+      sessionId: sessionError.sessionId,
+      detail: `Session ${sessionError.sessionId}: ${sessionError.message.substring(0, 120)}`,
+      timestamp: sessionError.detectedAt,
+    };
+  }
+
+  /**
+   * Create a RetryTrigger for a network recovery event.
+   */
+  static triggerFromNetworkRecovery(): RetryTrigger {
+    return {
+      source: "network-recovery",
+      detail: "Network connectivity recovered after outage",
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
+   * Create a manual RetryTrigger (user pressed the retry command).
+   */
+  static triggerFromManualAction(): RetryTrigger {
+    return {
+      source: "manual",
+      detail: "Manual retry triggered by user",
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
+   * Trigger a retry cycle.
+   * If a cycle is already active, the new trigger is ignored (debounce).
+   */
+  async triggerRetryCycle(trigger: RetryTrigger): Promise<void> {
     // Don't start a new cycle if one is active
     if (this.activeCycle && !this.activeCycle.cancelled) {
       this.logger.debug(
-        "Retry cycle already active — ignoring duplicate error signal",
+        "Retry cycle already active — ignoring duplicate trigger",
       );
       return;
     }
@@ -103,7 +168,7 @@ export class RetryEngine implements vscode.Disposable {
     const config = readConfig();
 
     this.activeCycle = {
-      error,
+      trigger,
       attemptNumber: 0,
       maxAttempts: config.maxRetries,
       timer: undefined,
@@ -111,14 +176,16 @@ export class RetryEngine implements vscode.Disposable {
     };
 
     this.logger.info(
-      `Starting retry cycle for: ${error.kind} (max ${config.maxRetries} attempts)`,
+      `Starting retry cycle: source=${trigger.source}` +
+      (trigger.errorCode ? `, errorCode=${trigger.errorCode}` : "") +
+      ` (max ${config.maxRetries} attempts)`,
     );
     await this.scheduleNextAttempt();
   }
 
   /**
-   * Cancel any active retry cycle. Called when the user disables the extension
-   * or when the error resolves on its own.
+   * Cancel any active retry cycle. Called when the user disables the extension,
+   * when the session watcher detects recovery, or when the error resolves.
    */
   cancelActiveCycle(reason: string): void {
     if (!this.activeCycle) {
@@ -149,7 +216,8 @@ export class RetryEngine implements vscode.Disposable {
 
     if (cycle.attemptNumber > cycle.maxAttempts) {
       this.logger.warn(
-        `Retry cycle exhausted after ${cycle.maxAttempts} attempts for: ${cycle.error.kind}`,
+        `Retry cycle exhausted after ${cycle.maxAttempts} attempts ` +
+        `(source: ${cycle.trigger.source})`,
       );
       this.guardrails.recordCycleExhausted();
       this.activeCycle = undefined;
@@ -188,6 +256,21 @@ export class RetryEngine implements vscode.Disposable {
       this.logger.warn("Guardrails blocked retry attempt");
       this.cancelActiveCycle("blocked by guardrails");
       return;
+    }
+
+    // Verify the errored session is still the active (visible) one.
+    // If the user switched to a different session, submitting a retry
+    // prompt would go to the wrong conversation.
+    if (cycle.trigger.sessionId && this.activeSessionResolver) {
+      const sessionIsActive = await this.activeSessionResolver.isSessionActive(
+        cycle.trigger.sessionId,
+      );
+      if (!sessionIsActive) {
+        this.cancelActiveCycle(
+          `errored session ${cycle.trigger.sessionId} is no longer the active session`,
+        );
+        return;
+      }
     }
 
     this.setState("retrying");

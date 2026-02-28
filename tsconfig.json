@@ -14,5 +14,5 @@
     "declaration": true,
     "declarationMap": true
   },
-  "exclude": ["node_modules", "out", ".vscode-test"]
+  "exclude": ["node_modules", "out", ".vscode-test", "src/**/*.spec.ts", "vitest.config.ts", "src/__mocks__"]
 }

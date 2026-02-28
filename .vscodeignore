@@ -3,8 +3,10 @@
 src/**
 .gitignore
 tsconfig.json
+vitest.config.ts
 .tmp_*
 **/*.ts
 **/*.map
 node_modules/**
 CONTRIBUTING.md
+.mypy_cache/**

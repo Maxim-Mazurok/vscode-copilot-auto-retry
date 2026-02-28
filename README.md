@@ -26,13 +26,15 @@ This extension fixes that. It **automatically retries** transient failures with 
 
 ## Features
 
-- **Automatic retry on rate limits** — Detects "exhausted this model's rate limit" errors and retries with exponential backoff
+- **Automatic retry on rate limits and network errors** — Monitors chat session files on disk for Copilot errors with a "Try Again" button and retries automatically
 - **Network recovery** — Monitors connectivity to GitHub/Copilot endpoints and retries when your network comes back online
+- **Multi-window safe** — Each VS Code window only monitors its own workspace sessions; retries never leak across windows
+- **Multi-session safe** — Verifies the errored session is still the active one before retrying, so it won't submit a retry prompt into the wrong conversation
 - **Exponential backoff with jitter** — Spreads retries over time to avoid hammering the API (2s → 4s → 8s → ...)
 - **Safety guardrails** — Hard rate limits (max 15 retries/minute), cooldown periods, and a kill switch to prevent runaway loops
 - **Status bar indicator** — Shows current state at a glance: idle, waiting, retrying, cooldown, or disabled
 - **Manual retry command** — Trigger a retry immediately with `Cmd+Shift+R` / `Ctrl+Shift+R`
-- **Zero configuration** — Works out of the box with sensible defaults. All settings are optional.
+- **Zero configuration** — Works out of the box with sensible defaults
 
 ## Install
 
@@ -46,25 +48,15 @@ Or search for **"Copilot Auto-Retry"** in the VS Code Extensions view (`Cmd+Shif
 
 **[Install from Open VSX](https://open-vsx.org/extension/MaximMazurok/vscode-copilot-auto-retry)**
 
-### Manual Install
-
-```bash
-code --install-extension copilot-auto-retry-0.1.0.vsix
-```
-
 ## How It Works
 
-1. The extension passively monitors Copilot's health using the VS Code Language Model API
-2. When a transient error is detected (rate limit, network issue, model unavailability), a retry cycle begins
-3. Each retry focuses the chat panel and submits a follow-up message asking Copilot to continue
-4. Retries use exponential backoff: 2 seconds, then 4, then 8, up to your configured maximum
-5. If all retries are exhausted, a 60-second cooldown kicks in before monitoring resumes
-
-The extension **never reads your prompts or responses** — it only checks whether Copilot is accepting requests.
+1. VS Code writes Copilot chat sessions as JSONL files to disk. The extension watches these files for error entries (rate limits, network errors) that have a "Try Again" button.
+2. When a retryable error is detected, a retry cycle begins with exponential backoff.
+3. Before each retry attempt, the extension verifies the errored session is still the active one (to avoid submitting a retry prompt into the wrong conversation).
+4. Each retry focuses the chat panel and submits a follow-up message asking Copilot to continue.
+5. A separate network monitor detects connectivity recovery (offline → online) and triggers a retry if there's an active error in the current window.
 
 ## Commands
-
-Open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`) and type:
 
 | Command | Description |
 |---|---|
@@ -84,20 +76,18 @@ All settings are under `copilotAutoRetry.*` in VS Code Settings.
 | `copilotAutoRetry.maxRetries` | `3` | Maximum retry attempts per failure (1–10) |
 | `copilotAutoRetry.baseDelayMs` | `2000` | Base delay before first retry in milliseconds (500–15,000) |
 | `copilotAutoRetry.maxDelayMs` | `30000` | Maximum backoff cap in milliseconds (5,000–120,000) |
-| `copilotAutoRetry.healthPollIntervalMs` | `5000` | Interval between health checks in milliseconds (2,000–60,000) |
 
 ## What Errors Does It Handle?
 
-The extension detects and retries these transient failure types:
+The extension detects errors by reading chat session JSONL files. It retries errors that have a `copilotContinueOnError` confirmation button (the "Try Again" button).
 
-| Error Type | Examples |
-|---|---|
-| **Rate limits** | "Sorry, you have exhausted this model's rate limit. Please wait a moment before trying again, or switch to GPT-4.1", HTTP 429 |
-| **Network issues** | Connection refused, connection reset, DNS failures, timeouts |
-| **Service disruptions** | HTTP 502/503, "service unavailable", "temporarily unavailable" |
-| **Model unavailability** | Models disappearing from `vscode.lm`, Copilot extension becoming inactive |
+| Error Type | Error Code | Retried? |
+|---|---|---|
+| **Rate limits** | `rateLimited` | Yes |
+| **Network errors** | `networkError` | Yes |
+| **User cancellation** | `canceled` | No (user-initiated) |
 
-It does **not** retry non-transient errors like authentication failures, expired subscriptions, or content filter blocks — those require user action.
+Other error codes with a "Try Again" button are also retried. Errors without the button are ignored.
 
 ## Status Bar
 
@@ -113,6 +103,14 @@ The status bar item (right side) shows the current state:
 
 Click the status bar item to toggle the extension on/off.
 
+## Limitations
+
+- **Retries add a message to the conversation** — There is no public API to press the "Try Again" button. The extension submits a follow-up prompt instead, which adds one extra turn. The AI sees the error in history and is asked to retry the same operation.
+- **Cannot target a specific session** — `workbench.action.chat.submit` always goes to the currently active chat widget. The extension mitigates this by checking which session is active before retrying, and skipping if the user switched away.
+- **Relies on VS Code internal file layout** — Session files are stored in `workspaceStorage/<hash>/chatSessions/`. If VS Code changes this layout, the extension will stop detecting errors (but won't break anything — it degrades gracefully).
+- **Active session check requires `sqlite3` CLI** — On macOS and most Linux systems, `sqlite3` is pre-installed. On systems where it's missing, the active-session verification is skipped (retry proceeds but without the safety check).
+- **Single retry at a time** — If multiple errors occur across different sessions in the same window, only the first triggers a retry cycle. Subsequent errors are ignored until the cycle completes.
+
 ## Requirements
 
 - VS Code 1.90 or later
@@ -122,10 +120,9 @@ Click the status bar item to toggle the extension on/off.
 
 This extension:
 
-- **Does not read** your prompts, responses, or conversation content
+- **Reads only error metadata** from chat session files (error codes and button data) — it does not read your prompts, responses, or conversation content
 - **Does not send** any data to external services (beyond VS Code's built-in commands)
 - **Does not wrap** or intercept Copilot's request pipeline
-- Health probes use a minimal single-token request that is cancelled immediately (zero quota cost)
 - Network probes send HTTP HEAD requests to `api.github.com` and Copilot endpoints only to check reachability
 
 ## Contributing
