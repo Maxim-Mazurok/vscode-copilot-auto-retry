@@ -148,16 +148,11 @@ export class ErrorDetector implements vscode.Disposable {
     const errors: DetectedError[] = [];
 
     // Check 1: Is the Copilot extension active?
+    // This is informational only — an inactive extension is NOT evidence of a
+    // failed conversation, so it never triggers a retry cycle.
     const extensionActive = this.isCopilotExtensionActive();
     if (!extensionActive && this.lastExtensionActive) {
-      const error: DetectedError = {
-        kind: "extension-inactive",
-        classification: "retryable",
-        timestamp: Date.now(),
-        detail: "Copilot extension became inactive",
-      };
-      errors.push(error);
-      this.logger.warn(error.detail);
+      this.logger.warn("Copilot extension became inactive (informational, not retryable)");
     }
     this.lastExtensionActive = extensionActive;
 
@@ -202,11 +197,9 @@ export class ErrorDetector implements vscode.Disposable {
       this.lastProbeSucceeded = probeResult.accessible;
     }
 
-    // Emit all detected errors
-    for (const error of errors) {
-      this.emitError(error);
-    }
-
+    // Return errors to caller (HealthMonitor). Do NOT call emitError() here —
+    // the onError event path is reserved for reactive signals (diagnostics,
+    // model list changes) to avoid dual-triggering the retry engine.
     return errors;
   }
 

@@ -11,8 +11,16 @@ import { RetryEngine } from "./retryEngine";
  * it feeds the error to the retry engine. When the state recovers (unhealthy → healthy),
  * it cancels any active retry cycle.
  */
+/**
+ * Grace period (ms) after start() before the first health check runs.
+ * Gives Copilot and other extensions time to fully activate so the first
+ * poll establishes a correct baseline rather than seeing false negatives.
+ */
+const STARTUP_GRACE_PERIOD_MS = 10_000;
+
 export class HealthMonitor implements vscode.Disposable {
   private pollTimer: ReturnType<typeof setInterval> | undefined;
+  private startupTimer: ReturnType<typeof setTimeout> | undefined;
   private isHealthy = true;
   private lastCheckTimestamp = 0;
 
@@ -32,26 +40,34 @@ export class HealthMonitor implements vscode.Disposable {
 
     const config = readConfig();
     this.logger.info(
-      `Health monitor starting (poll interval: ${config.healthPollIntervalMs}ms)`,
+      `Health monitor starting (poll interval: ${config.healthPollIntervalMs}ms, first check in ${STARTUP_GRACE_PERIOD_MS}ms)`,
     );
 
-    // Perform an immediate initial check
-    void this.performHealthCheck();
-
-    this.pollTimer = setInterval(() => {
+    // Delay the first check so Copilot has time to fully activate.
+    // Without this grace period the first poll sees "extension not active"
+    // and "no models" which are normal startup conditions, not errors.
+    this.startupTimer = setTimeout(() => {
+      this.startupTimer = undefined;
       void this.performHealthCheck();
-    }, config.healthPollIntervalMs);
+      this.pollTimer = setInterval(() => {
+        void this.performHealthCheck();
+      }, config.healthPollIntervalMs);
+    }, STARTUP_GRACE_PERIOD_MS);
   }
 
   /**
    * Stop the periodic health poll.
    */
   stop(): void {
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = undefined;
+    }
     if (this.pollTimer) {
       clearInterval(this.pollTimer);
       this.pollTimer = undefined;
-      this.logger.info("Health monitor stopped");
     }
+    this.logger.info("Health monitor stopped");
   }
 
   /**

@@ -36,15 +36,25 @@ export function activate(context: vscode.ExtensionContext): void {
   const networkMonitor = new NetworkMonitor(logger);
   const statusBar = new StatusBar(logger);
 
-  // Wire network recovery → auto-retry.
-  // When network comes back after an outage, proactively trigger the chat retry
-  // command. If there's no failed chat message, the command is a safe no-op.
+  // Wire network recovery → auto-retry, but ONLY if the health monitor has
+  // already detected a degraded state. A blind retry on every network
+  // reconnect would submit a chat prompt into an empty/healthy conversation.
   networkMonitor.onRecovery(() => {
-    logger.info("Network recovered — triggering automatic chat retry");
     const config = readConfig();
     if (!config.enabled) {
       return;
     }
+
+    if (healthMonitor.getIsHealthy()) {
+      logger.info(
+        "Network recovered but Copilot health is OK — skipping retry (no known conversation error)",
+      );
+      return;
+    }
+
+    logger.info(
+      "Network recovered while Copilot health was degraded — triggering retry",
+    );
 
     const syntheticError: DetectedError = {
       kind: "offline",
