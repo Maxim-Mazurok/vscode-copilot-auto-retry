@@ -98,12 +98,22 @@ export class ErrorDetector implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly errorListeners: Array<(error: DetectedError) => void> = [];
 
-  /** Tracks whether the last health check found models available. */
-  private lastModelAvailable = true;
-  /** Tracks whether the last LM probe succeeded (no rate-limit). */
-  private lastProbeSucceeded = true;
-  /** Tracks whether the Copilot extension was last seen as active. */
-  private lastExtensionActive = true;
+  /**
+   * Tracks whether the last health check found models available.
+   * Starts as `undefined` (no check performed yet) so the first poll
+   * establishes a baseline without triggering a false degradation event.
+   */
+  private lastModelAvailable: boolean | undefined = undefined;
+  /**
+   * Tracks whether the last LM probe succeeded (no rate-limit).
+   * Starts as `undefined` — see `lastModelAvailable` for rationale.
+   */
+  private lastProbeSucceeded: boolean | undefined = undefined;
+  /**
+   * Tracks whether the Copilot extension was last seen as active.
+   * Starts as `undefined` — see `lastModelAvailable` for rationale.
+   */
+  private lastExtensionActive: boolean | undefined = undefined;
 
   constructor(private readonly logger: Logger) {
     // Subscribe to diagnostic changes
