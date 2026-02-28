@@ -16,13 +16,13 @@
 
 ## The Problem
 
-You're in the middle of an agent mode session and Copilot Chat shows:
+You kick off a task in Copilot agent mode, switch context to something else, and expect it to be done when you come back. Instead, somewhere in the middle, Copilot hit a rate limit or a network blip:
 
 > **Sorry, you have exhausted this model's rate limit. Please wait a moment before trying again, or switch to GPT-4.1. [Learn More](https://aka.ms/copilot-rate-limits)**
 
-You click "Try Again". It fails again. You wait. You click again. And again.
+Now instead of a completed task, you're staring at a half-finished result and a "Try Again" button. You have to context-switch back, click retry, wait, and babysit it to completion — wasting the time you thought you were saving.
 
-This extension **does that for you**, automatically, with exponential backoff — so you can step away and come back to a working session.
+This extension fixes that. It **automatically retries** transient failures with exponential backoff so Copilot keeps working while you're away.
 
 ## Features
 
