@@ -32,28 +32,29 @@ export function activate(context: vscode.ExtensionContext): void {
   const guardrails = new Guardrails(logger);
   const errorDetector = new ErrorDetector(logger);
   const retryEngine = new RetryEngine(logger, guardrails);
-  const healthMonitor = new HealthMonitor(logger, errorDetector, retryEngine);
+  const healthMonitor = new HealthMonitor(logger, errorDetector);
   const networkMonitor = new NetworkMonitor(logger);
   const statusBar = new StatusBar(logger);
 
-  // Wire network recovery → auto-retry, but ONLY if the health monitor has
-  // already detected a degraded state. A blind retry on every network
-  // reconnect would submit a chat prompt into an empty/healthy conversation.
+  // Wire network recovery → auto-retry.
+  //
+  // Limitation: there is no public VS Code API to detect whether the current
+  // chat conversation actually has a failed response. ChatResponseTurn.result
+  // .errorDetails is only visible inside a chat participant's own handler, and
+  // third-party extensions cannot read Copilot's conversation state.
+  //
+  // The offline → online transition is the strongest available signal for
+  // network-related chat failures. It only fires after 2+ consecutive probe
+  // failures followed by a recovery + grace period, so it's already well-
+  // qualified and won't fire on startup (unknown → online is excluded).
   networkMonitor.onRecovery(() => {
     const config = readConfig();
     if (!config.enabled) {
       return;
     }
 
-    if (healthMonitor.getIsHealthy()) {
-      logger.info(
-        "Network recovered but Copilot health is OK — skipping retry (no known conversation error)",
-      );
-      return;
-    }
-
     logger.info(
-      "Network recovered while Copilot health was degraded — triggering retry",
+      "Network recovered after outage — triggering retry in case a chat request failed during the outage",
     );
 
     const syntheticError: DetectedError = {

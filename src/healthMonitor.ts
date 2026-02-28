@@ -2,14 +2,23 @@ import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { readConfig } from "./configuration";
 import { ErrorDetector } from "./errorDetector";
-import { RetryEngine } from "./retryEngine";
 
 /**
  * Periodic health monitor that polls Copilot's status at configurable intervals.
  *
- * When a health check detects an error state transition (healthy → unhealthy),
- * it feeds the error to the retry engine. When the state recovers (unhealthy → healthy),
- * it cancels any active retry cycle.
+ * Important: the health monitor tracks SERVICE-level health (is the extension
+ * active? are models available? are they rate-limited?) — it does NOT detect
+ * whether a specific chat conversation has a failed response. There is no
+ * public VS Code API to observe conversation error state.
+ *
+ * Therefore, the health monitor does NOT trigger the retry engine directly.
+ * Retry triggers come from:
+ *   1. Network recovery (offline → online transition)
+ *   2. Diagnostic events matching transient error patterns
+ *   3. Manual user trigger
+ *
+ * The health monitor's role is to track and report health status via the
+ * status bar and the showStatus command.
  */
 /**
  * Grace period (ms) after start() before the first health check runs.
@@ -27,7 +36,6 @@ export class HealthMonitor implements vscode.Disposable {
   constructor(
     private readonly logger: Logger,
     private readonly errorDetector: ErrorDetector,
-    private readonly retryEngine: RetryEngine,
   ) {}
 
   /**
@@ -91,7 +99,6 @@ export class HealthMonitor implements vscode.Disposable {
         // System appears healthy
         if (!this.isHealthy) {
           this.logger.info("Copilot health recovered");
-          this.retryEngine.cancelActiveCycle("health recovered");
           this.isHealthy = true;
         }
         return;
@@ -107,9 +114,10 @@ export class HealthMonitor implements vscode.Disposable {
         this.logger.warn(
           `Copilot health degraded: ${retryableErrors.map((error) => error.kind).join(", ")}`,
         );
-
-        // Trigger retry for the first (most significant) error
-        await this.retryEngine.triggerRetryCycle(retryableErrors[0]);
+        // Note: we intentionally do NOT trigger the retry engine here.
+        // Service-level degradation (rate limit, model unavailable) does not
+        // mean there is a failed conversation to retry.  Retry triggers come
+        // from network recovery, diagnostics, or manual user action.
       }
     } catch (checkError) {
       // Health check itself failed — don't cascade
