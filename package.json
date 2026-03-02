@@ -2,7 +2,7 @@
   "name": "vscode-copilot-auto-retry",
   "displayName": "Copilot Auto-Retry",
   "description": "Lightweight resilience layer that automatically retries transient Copilot failures with exponential backoff",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "MaximMazurok",
   "license": "MIT",
   "icon": "assets/icon.png",

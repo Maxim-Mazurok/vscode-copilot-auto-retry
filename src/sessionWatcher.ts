@@ -51,11 +51,18 @@ export const NON_RETRYABLE_ERROR_CODES = new Set(["canceled"]);
 const WATCHER_DEBOUNCE_MS = 500;
 
 /**
- * How far back from the end of the file to read when checking for errors.
- * Session JSONL files are append-only, so new content is always at the end.
- * 32 KB is generous — most result patches are well under 10 KB.
+ * How many bytes to read from the tail of large session files.
+ *
+ * Session JSONL files are append-only. After the last result entry, VS Code
+ * typically writes only a few small entries (followups, modelState, response
+ * replacement — totalling ~5 KB). The result entry itself can be large (up
+ * to ~200 KB observed) when it carries tool-call metadata.
+ *
+ * 512 KB comfortably covers all observed real-world sessions. If the result
+ * happens to be outside this window (e.g., an exceptionally large result
+ * entry), the scanner falls back to reading the full file.
  */
-const TAIL_READ_BYTES = 32_768;
+const TAIL_READ_BYTES = 524_288;
 
 export class SessionWatcher implements vscode.Disposable {
   private fileWatcher: vscode.FileSystemWatcher | undefined;
@@ -272,9 +279,11 @@ export class SessionWatcher implements vscode.Disposable {
   /**
    * Scan a session JSONL file for error state in the most recent request.
    *
-   * Strategy: read the last TAIL_READ_BYTES of the file, parse complete
-   * JSONL lines, and find the most recent result entry. This is efficient
-   * even for large files (12+ MB).
+   * Strategy: read the last 512 KB of the file and parse complete JSONL
+   * lines to find the most recent result entry. 512 KB comfortably covers all
+   * observed real-world sessions. If the result entry is not in the tail
+   * (e.g., an exceptionally large result followed by small trailing entries),
+   * falls back to reading the full file.
    */
   private async scanSessionFile(fileUri: vscode.Uri): Promise<void> {
     const sessionId =
@@ -284,39 +293,80 @@ export class SessionWatcher implements vscode.Disposable {
       const fileStat = await vscode.workspace.fs.stat(fileUri);
       const fileSize = fileStat.size;
 
-      let content: string;
-
-      if (fileSize <= TAIL_READ_BYTES) {
-        // Small file — read all of it
-        const rawBytes = await vscode.workspace.fs.readFile(fileUri);
-        content = Buffer.from(rawBytes).toString("utf-8");
-      } else {
-        // Large file — read only the tail
-        // vscode.workspace.fs doesn't support partial reads, so we use
-        // Node.js fs for efficiency on large files.
-        const nodeFilesystem = await import("fs/promises");
-        const fileHandle = await nodeFilesystem.open(fileUri.fsPath, "r");
-        try {
-          const buffer = Buffer.alloc(TAIL_READ_BYTES);
-          const readOffset = fileSize - TAIL_READ_BYTES;
-          await fileHandle.read(buffer, 0, TAIL_READ_BYTES, readOffset);
-          content = buffer.toString("utf-8");
-          // The first "line" may be truncated — skip it
-          const firstNewline = content.indexOf("\n");
-          if (firstNewline >= 0) {
-            content = content.substring(firstNewline + 1);
-          }
-        } finally {
-          await fileHandle.close();
-        }
-      }
-
+      const content = await this.readSessionContent(
+        fileUri,
+        fileSize,
+        sessionId,
+      );
       this.processSessionContent(sessionId, content);
     } catch (readError) {
       // File may be in the process of being written — ignore transient errors
       this.logger.debug(
         `Failed to read session file ${sessionId}: ${readError instanceof Error ? readError.message : String(readError)}`,
       );
+    }
+  }
+
+  /**
+   * Read enough of a session file to find the latest result entry.
+   *
+   * Small files (≤ 512 KB) are read in full. Larger files get a 512 KB tail
+   * read first; if that doesn't contain a result entry, the full file is read
+   * as a fallback.
+   */
+  private async readSessionContent(
+    fileUri: vscode.Uri,
+    fileSize: number,
+    sessionId: string,
+  ): Promise<string> {
+    if (fileSize <= TAIL_READ_BYTES) {
+      const rawBytes = await vscode.workspace.fs.readFile(fileUri);
+      return Buffer.from(rawBytes).toString("utf-8");
+    }
+
+    // Large file — try the tail first
+    const nodeFilesystem = await import("fs/promises");
+    const tailContent = await this.readFileTail(
+      nodeFilesystem,
+      fileUri.fsPath,
+      fileSize,
+    );
+
+    const parsed = parseSessionContent(tailContent);
+    if (parsed.highestResultRequestIndex >= 0) {
+      return tailContent;
+    }
+
+    // No result in tail — fall back to reading the full file
+    this.logger.debug(
+      `No result entries in last ${TAIL_READ_BYTES} bytes of session ${sessionId} — reading full file`,
+    );
+    return nodeFilesystem.readFile(fileUri.fsPath, "utf-8");
+  }
+
+  /**
+   * Read the last TAIL_READ_BYTES of a file.
+   * Skips the first (likely truncated) line.
+   */
+  private async readFileTail(
+    nodeFilesystem: typeof import("fs/promises"),
+    filePath: string,
+    fileSize: number,
+  ): Promise<string> {
+    const fileHandle = await nodeFilesystem.open(filePath, "r");
+    try {
+      const buffer = Buffer.alloc(TAIL_READ_BYTES);
+      const readOffset = fileSize - TAIL_READ_BYTES;
+      await fileHandle.read(buffer, 0, TAIL_READ_BYTES, readOffset);
+      let content = buffer.toString("utf-8");
+      // The first "line" is likely truncated — skip it
+      const firstNewline = content.indexOf("\n");
+      if (firstNewline >= 0) {
+        content = content.substring(firstNewline + 1);
+      }
+      return content;
+    } finally {
+      await fileHandle.close();
     }
   }
 

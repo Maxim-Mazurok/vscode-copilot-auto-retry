@@ -703,3 +703,129 @@ describe("NON_RETRYABLE_ERROR_CODES", () => {
 		expect(NON_RETRYABLE_ERROR_CODES.has("rateLimited")).toBe(false);
 	});
 });
+
+/* ══════════════════════ Regression: large result entries ══════════════════ */
+
+describe("parseSessionContent — large result entry regression", () => {
+	/**
+	 * Regression test for the real-world bug where a 69 KB result entry
+	 * (containing tool-call metadata) was followed by small entries
+	 * (followups, modelState, response replacement), pushing the result
+	 * entry outside the old 32 KB tail-read window.
+	 *
+	 * Source: session e2bd04ec-7518-4cbd-aa1f-8e6d8609019a.jsonl
+	 * The file was 103,568 bytes with 8 JSONL lines:
+	 *   Line 1: kind=0, initial snapshot (1,324 bytes)
+	 *   Line 2: kind=1, customTitle (76 bytes)
+	 *   Line 3: kind=2, requests array replacement (11,377 bytes)
+	 *   Line 4: kind=2, response (19,680 bytes)
+	 *   Line 5: kind=1, requests[0].result — RATE LIMIT ERROR (69,170 bytes!)
+	 *   Line 6: kind=1, followups (48 bytes)
+	 *   Line 7: kind=1, modelState (86 bytes)
+	 *   Line 8: kind=2, response replacement (1,799 bytes)
+	 *
+	 * The old 32 KB tail window started at byte 70,800 — AFTER the start of
+	 * line 5 (byte 32,461). After skipping the first partial line, only
+	 * lines 6–8 were visible — none of which contain result entries.
+	 */
+
+	/** Build a large result entry that mimics the real-world 69 KB payload. */
+	function buildLargeRateLimitResultEntry(paddingBytes: number): JsonlEntry {
+		// The real entry was large because result.metadata.toolCallRounds
+		// contained all of the agent's tool calls and their outputs.
+		const padding = "x".repeat(paddingBytes);
+		return {
+			kind: 1,
+			k: ["requests", 0, "result"],
+			v: {
+				errorDetails: {
+					code: "rateLimited",
+					message: "Sorry, you have exhausted this model's rate limit.",
+					level: 0,
+					isRateLimited: true,
+					confirmationButtons: [
+						{ data: { copilotContinueOnError: true }, label: "Try Again" },
+					],
+					responseIsIncomplete: true,
+				},
+				metadata: {
+					toolCallRounds: [{ content: padding }],
+				},
+			},
+		};
+	}
+
+	it("detects error from full content even when result entry is very large", () => {
+		// Simulate full file content: snapshot + large result + small trailing entries
+		const snapshot: JsonlEntry = {
+			kind: 0,
+			v: { requests: [{ message: { text: "do something" } }] },
+		};
+		const largeResult = buildLargeRateLimitResultEntry(60_000);
+		const followups: JsonlEntry = {
+			kind: 1,
+			k: ["requests", 0, "followups"],
+			v: [],
+		};
+		const modelState: JsonlEntry = {
+			kind: 1,
+			k: ["requests", 0, "modelState"],
+			v: { isStale: false },
+		};
+
+		const fullContent = toJsonlContent(snapshot, largeResult, followups, modelState);
+		const result = parseSessionContent(fullContent);
+
+		expect(result.latestError).toBeDefined();
+		expect(result.latestError!.code).toBe("rateLimited");
+		expect(result.latestError!.hasRetryButton).toBe(true);
+		expect(result.latestError!.requestIndex).toBe(0);
+		expect(result.highestResultRequestIndex).toBe(0);
+	});
+
+	it("returns no result entries when content has only non-result lines (old bug scenario)", () => {
+		// This simulates what the old 32 KB tail reader saw:
+		// only followups, modelState, and response — no result entries at all.
+		const followups: JsonlEntry = {
+			kind: 1,
+			k: ["requests", 0, "followups"],
+			v: [],
+		};
+		const modelState: JsonlEntry = {
+			kind: 1,
+			k: ["requests", 0, "modelState"],
+			v: { isStale: false },
+		};
+		const response: JsonlEntry = {
+			kind: 2,
+			k: ["requests", 0, "response"],
+			v: { text: "some response text" },
+		};
+
+		const tailOnlyContent = toJsonlContent(followups, modelState, response);
+		const result = parseSessionContent(tailOnlyContent);
+
+		// No result entries → highestResultRequestIndex is -1
+		// This is the signal that triggers adaptive window expansion
+		expect(result.latestError).toBeUndefined();
+		expect(result.highestResultRequestIndex).toBe(-1);
+	});
+
+	it("finds error when tail includes the complete result entry line", () => {
+		// Simulate what the adaptive reader sees after expanding the window:
+		// the full result entry plus the trailing entries
+		const largeResult = buildLargeRateLimitResultEntry(60_000);
+		const followups: JsonlEntry = {
+			kind: 1,
+			k: ["requests", 0, "followups"],
+			v: [],
+		};
+
+		const expandedContent = toJsonlContent(largeResult, followups);
+		const result = parseSessionContent(expandedContent);
+
+		expect(result.latestError).toBeDefined();
+		expect(result.latestError!.code).toBe("rateLimited");
+		expect(result.highestResultRequestIndex).toBe(0);
+	});
+});
