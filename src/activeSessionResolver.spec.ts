@@ -235,6 +235,69 @@ describe("ActiveSessionResolver", () => {
 			};
 			expect(callOptions.timeout).toBe(3_000);
 		});
+
+		it("returns session ID from new format (sessionResource.path with Base64)", async () => {
+			const resolver = createResolver();
+			resolver.initialize(
+				Uri.file("/Users/test/workspaceStorage/abc123/extension-id"),
+			);
+
+			// OTYxZjRmNGYtMzdhYS00ODY0LThlZjEtNjBlYjdmMjJhYWE2 = 961f4f4f-37aa-4864-8ef1-60eb7f22aaa6
+			simulateSqliteOutput(
+				'{"sessionResource":{"path":"/OTYxZjRmNGYtMzdhYS00ODY0LThlZjEtNjBlYjdmMjJhYWE2"}}',
+			);
+
+			const sessionId = await resolver.getActiveSessionId();
+
+			expect(sessionId).toBe("961f4f4f-37aa-4864-8ef1-60eb7f22aaa6");
+		});
+
+		it("returns session ID from new format without leading slash", async () => {
+			const resolver = createResolver();
+			resolver.initialize(
+				Uri.file("/Users/test/workspaceStorage/abc123/extension-id"),
+			);
+
+			// ZmViZTRkNzItZTI0Mi00N2RlLTg4ZjktNGFhMDllNzdmOGZj = feb e4d72-e242-47de-88f9-4aa09e77f8fc
+			simulateSqliteOutput(
+				'{"sessionResource":{"path":"ZmViZTRkNzItZTI0Mi00N2RlLTg4ZjktNGFhMDllNzdmOGZj"}}',
+			);
+
+			const sessionId = await resolver.getActiveSessionId();
+
+			expect(sessionId).toBe("febe4d72-e242-47de-88f9-4aa09e77f8fc");
+		});
+
+		it("prefers old format sessionId over new format if both present", async () => {
+			const resolver = createResolver();
+			resolver.initialize(
+				Uri.file("/Users/test/workspaceStorage/abc123/extension-id"),
+			);
+
+			simulateSqliteOutput(
+				'{"sessionId":"old-format-id","sessionResource":{"path":"/OTYxZjRmNGYtMzdhYS00ODY0LThlZjEtNjBlYjdmMjJhYWE2"}}',
+			);
+
+			const sessionId = await resolver.getActiveSessionId();
+
+			expect(sessionId).toBe("old-format-id");
+		});
+
+		it("returns undefined when Base64 decode does not produce valid UUID", async () => {
+			const resolver = createResolver();
+			resolver.initialize(
+				Uri.file("/Users/test/workspaceStorage/abc123/extension-id"),
+			);
+
+			// "not-a-uuid" in Base64
+			simulateSqliteOutput(
+				'{"sessionResource":{"path":"/bm90LWEtdXVpZA=="}}',
+			);
+
+			const sessionId = await resolver.getActiveSessionId();
+
+			expect(sessionId).toBeUndefined();
+		});
 	});
 
 	describe("isSessionActive", () => {

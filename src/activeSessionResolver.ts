@@ -76,10 +76,31 @@ export class ActiveSessionResolver {
 			}
 
 			const parsed = JSON.parse(rawValue);
-			const sessionId = parsed?.sessionId;
 
+			// Try old format first (direct sessionId field)
+			const sessionId = parsed?.sessionId;
 			if (typeof sessionId === "string" && sessionId.length > 0) {
 				return sessionId;
+			}
+
+			// Try new format (sessionResource.path contains Base64-encoded session ID)
+			const sessionResourcePath = parsed?.sessionResource?.path;
+			if (typeof sessionResourcePath === "string" && sessionResourcePath.length > 0) {
+				// Path is like "/OTYxZjRmNGYtMzdhYS00ODY0LThlZjEtNjBlYjdmMjJhYWE2"
+				// Strip leading slash and decode Base64
+				const base64Id = sessionResourcePath.startsWith("/")
+					? sessionResourcePath.slice(1)
+					: sessionResourcePath;
+
+				try {
+					const decoded = Buffer.from(base64Id, "base64").toString("utf-8");
+					// Validate it looks like a UUID
+					if (decoded.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+						return decoded;
+					}
+				} catch {
+					// Invalid Base64, fall through
+				}
 			}
 
 			this.logger.debug(
