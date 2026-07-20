@@ -6,7 +6,7 @@ import { ActiveSessionResolver } from "./activeSessionResolver";
 import { SessionError } from "./sessionWatcher";
 
 /**
- * Manages retry attempts for detected Copilot errors using exponential backoff.
+ * Manages retry attempts for detected Copilot errors using bounded backoff.
  *
  * ## How retry execution works
  *
@@ -204,7 +204,7 @@ export class RetryEngine implements vscode.Disposable {
   }
 
   /**
-   * Schedule the next retry attempt with exponential backoff.
+   * Schedule the next retry attempt with bounded backoff.
    */
   private async scheduleNextAttempt(): Promise<void> {
     const cycle = this.activeCycle;
@@ -303,9 +303,9 @@ export class RetryEngine implements vscode.Disposable {
       });
 
       this.logger.info("Retry prompt submitted successfully");
-      this.guardrails.recordSuccess();
-      this.activeCycle = undefined;
-      this.setState("idle");
+      // A completed command only means VS Code accepted the prompt. Keep the
+      // cycle running until a session recovery cancels it or it is exhausted.
+      await this.scheduleNextAttempt();
     } catch (executeError) {
       const message =
         executeError instanceof Error

@@ -133,43 +133,34 @@ describe("Guardrails", () => {
 	});
 
 	describe("calculateDelay", () => {
-		it("returns baseDelayMs * 0.8 for attempt 1 with minimum jitter", () => {
+		it("uses predictable 5, 10, 15, 20, 30 second delays", () => {
+			mockedReadConfig.mockReturnValue({
+				enabled: true,
+				maxRetries: 5,
+				baseDelayMs: 5000,
+				maxDelayMs: 30_000,
+			});
+
 			const guardrails = createGuardrails();
 
-			// Math.random() = 0 → jitter factor = 0.8 (minimum)
-			vi.spyOn(Math, "random").mockReturnValue(0);
-
-			const delay = guardrails.calculateDelay(1);
-
-			// base * 2^0 * 0.8 = 2000 * 1 * 0.8 = 1600
-			expect(delay).toBe(1600);
+			expect(guardrails.calculateDelay(1)).toBe(5000);
+			expect(guardrails.calculateDelay(2)).toBe(10_000);
+			expect(guardrails.calculateDelay(3)).toBe(15_000);
+			expect(guardrails.calculateDelay(4)).toBe(20_000);
+			expect(guardrails.calculateDelay(5)).toBe(30_000);
 		});
 
-		it("doubles delay for each subsequent attempt (at fixed jitter)", () => {
+		it("caps earlier linear delays at maxDelayMs", () => {
+			mockedReadConfig.mockReturnValue({
+				enabled: true,
+				maxRetries: 5,
+				baseDelayMs: 5000,
+				maxDelayMs: 12_000,
+			});
+
 			const guardrails = createGuardrails();
 
-			// Math.random() = 0.5 → jitter factor = 1.0 (neutral)
-			vi.spyOn(Math, "random").mockReturnValue(0.5);
-
-			const delayAttempt1 = guardrails.calculateDelay(1);
-			const delayAttempt2 = guardrails.calculateDelay(2);
-			const delayAttempt3 = guardrails.calculateDelay(3);
-
-			expect(delayAttempt1).toBe(2000); // 2000 * 1 * 1.0
-			expect(delayAttempt2).toBe(4000); // 2000 * 2 * 1.0
-			expect(delayAttempt3).toBe(8000); // 2000 * 4 * 1.0
-		});
-
-		it("clamps delay at maxDelayMs", () => {
-			const guardrails = createGuardrails();
-
-			// At jitter factor 1.0
-			vi.spyOn(Math, "random").mockReturnValue(0.5);
-
-			// Attempt 5: 2000 * 2^4 = 32000, clamped to 30000
-			const delay = guardrails.calculateDelay(5);
-
-			expect(delay).toBe(30_000);
+			expect(guardrails.calculateDelay(3)).toBe(12_000);
 		});
 
 		it("enforces minimum delay of 1000ms even with very low base", () => {
@@ -182,30 +173,9 @@ describe("Guardrails", () => {
 
 			const guardrails = createGuardrails();
 
-			// Minimum jitter: 100 * 1 * 0.8 = 80, floored to 1000
-			vi.spyOn(Math, "random").mockReturnValue(0);
-
 			const delay = guardrails.calculateDelay(1);
 
 			expect(delay).toBe(1000);
-		});
-
-		it("adds jitter within ±20% range", () => {
-			const guardrails = createGuardrails();
-
-			// Minimum jitter (random=0 → factor=0.8)
-			vi.spyOn(Math, "random").mockReturnValue(0);
-			const minimumDelay = guardrails.calculateDelay(1);
-
-			// Maximum jitter (random=1 → factor=1.2)
-			vi.spyOn(Math, "random").mockReturnValue(1);
-			const maximumDelay = guardrails.calculateDelay(1);
-
-			// base=2000, attempt 1: exponential = 2000
-			// min: 2000 * 0.8 = 1600
-			// max: 2000 * 1.2 = 2400
-			expect(minimumDelay).toBe(1600);
-			expect(maximumDelay).toBe(2400);
 		});
 	});
 

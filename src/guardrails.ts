@@ -121,21 +121,20 @@ export class Guardrails {
   }
 
   /**
-   * Calculate the delay for a given attempt number using exponential backoff
-   * with jitter. Respects guardrail minimums and configured maximums.
+   * Calculate a bounded linear delay for a given attempt number.
+   *
+   * A 5-second base produces 5s, 10s, 15s, 20s, then the configured 30s cap
+   * for attempt five and later. Fixed delays make retry timing predictable.
    */
   calculateDelay(attemptNumber: number): number {
     const config = readConfig();
-    // Exponential: base * 2^(attempt-1)
-    const exponentialDelay =
-      config.baseDelayMs * Math.pow(2, attemptNumber - 1);
-    // Clamp to max
-    const clampedDelay = Math.min(exponentialDelay, config.maxDelayMs);
-    // Add jitter: ±20%
-    const jitterFactor = 0.8 + Math.random() * 0.4;
-    const delayWithJitter = Math.round(clampedDelay * jitterFactor);
+    const linearDelay = config.baseDelayMs * attemptNumber;
+    const cappedDelay =
+      attemptNumber >= 5
+        ? config.maxDelayMs
+        : Math.min(linearDelay, config.maxDelayMs);
     // Enforce floor
-    return Math.max(delayWithJitter, MINIMUM_RETRY_INTERVAL_MS);
+    return Math.max(cappedDelay, MINIMUM_RETRY_INTERVAL_MS);
   }
 
   /**
