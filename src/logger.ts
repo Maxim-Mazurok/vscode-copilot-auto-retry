@@ -7,11 +7,21 @@ import * as vscode from "vscode";
 export class Logger {
   private readonly outputChannel: vscode.LogOutputChannel;
 
+  /**
+   * When true, `debug()` messages are also written at `info` level so they
+   * appear without changing the output channel's log-level dropdown.
+   */
+  private verbose = false;
+
   constructor() {
     this.outputChannel = vscode.window.createOutputChannel(
-      "Copilot Auto-Retry",
+      "Copilot Long Run",
       { log: true },
     );
+  }
+
+  setVerbose(verbose: boolean): void {
+    this.verbose = verbose;
   }
 
   info(message: string): void {
@@ -27,7 +37,11 @@ export class Logger {
   }
 
   debug(message: string): void {
-    this.outputChannel.debug(message);
+    if (this.verbose) {
+      this.outputChannel.info(`[debug] ${message}`);
+    } else {
+      this.outputChannel.debug(message);
+    }
   }
 
   show(): void {
