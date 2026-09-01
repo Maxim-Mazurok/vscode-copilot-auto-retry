@@ -1,14 +1,14 @@
 {
-  "name": "vscode-copilot-auto-retry",
-  "displayName": "Copilot Auto-Retry",
-  "description": "Lightweight resilience layer that automatically retries transient Copilot failures with exponential backoff",
-  "version": "0.3.2",
-  "publisher": "MaximMazurok",
+  "name": "vscode-copilot-long-run",
+  "displayName": "Copilot Long Run",
+  "description": "Keeps GitHub Copilot agent sessions going by automatically sending a continue message whenever the agent pauses",
+  "version": "0.1.0",
+  "publisher": "TheoGuidoux",
   "license": "MIT",
   "icon": "assets/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Maxim-Mazurok/vscode-copilot-auto-retry"
+    "url": "https://github.com/TheoGuidoux/vscode-copilot-long-run"
   },
   "engines": {
     "vscode": "^1.90.0"
@@ -22,65 +22,75 @@
   "main": "./out/extension.js",
   "contributes": {
     "configuration": {
-      "title": "Copilot Auto-Retry",
+      "title": "Copilot Long Run",
       "properties": {
-        "copilotAutoRetry.enabled": {
+        "copilotLongRun.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable automatic retry of transient Copilot failures"
+          "description": "Enable automatically continuing paused Copilot agent sessions"
         },
-        "copilotAutoRetry.maxRetries": {
+        "copilotLongRun.continueMessage": {
+          "type": "string",
+          "default": "Keep going until the task is fully complete.",
+          "description": "The message sent to the agent to keep it working when a pause is detected"
+        },
+        "copilotLongRun.maxContinues": {
           "type": "number",
           "default": 3,
           "minimum": 1,
           "maximum": 10,
-          "description": "Maximum number of retry attempts per failure event"
+          "description": "Maximum number of continue attempts per detected pause"
         },
-        "copilotAutoRetry.baseDelayMs": {
+        "copilotLongRun.baseDelayMs": {
           "type": "number",
           "default": 2000,
           "minimum": 500,
           "maximum": 15000,
-          "description": "Base delay in milliseconds before first retry (doubles on each subsequent attempt)"
+          "description": "Base delay in milliseconds before the first continue attempt (doubles on each subsequent attempt)"
         },
-        "copilotAutoRetry.maxDelayMs": {
+        "copilotLongRun.maxDelayMs": {
           "type": "number",
           "default": 30000,
           "minimum": 5000,
           "maximum": 120000,
           "description": "Maximum delay cap in milliseconds for exponential backoff"
+        },
+        "copilotLongRun.verboseLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write detailed diagnostic logs at info level so they appear in the output channel without changing the log level"
         }
       }
     },
     "commands": [
       {
-        "command": "copilotAutoRetry.enable",
-        "title": "Copilot Auto-Retry: Enable"
+        "command": "copilotLongRun.enable",
+        "title": "Copilot Long Run: Enable"
       },
       {
-        "command": "copilotAutoRetry.disable",
-        "title": "Copilot Auto-Retry: Disable"
+        "command": "copilotLongRun.disable",
+        "title": "Copilot Long Run: Disable"
       },
       {
-        "command": "copilotAutoRetry.toggleEnabled",
-        "title": "Copilot Auto-Retry: Toggle Enabled"
+        "command": "copilotLongRun.toggleEnabled",
+        "title": "Copilot Long Run: Toggle Enabled"
       },
       {
-        "command": "copilotAutoRetry.showStatus",
-        "title": "Copilot Auto-Retry: Show Status"
+        "command": "copilotLongRun.showStatus",
+        "title": "Copilot Long Run: Show Status"
       },
       {
-        "command": "copilotAutoRetry.retryNow",
-        "title": "Copilot Auto-Retry: Retry Now"
+        "command": "copilotLongRun.continueNow",
+        "title": "Copilot Long Run: Continue Now"
       },
       {
-        "command": "copilotAutoRetry.simulateError",
-        "title": "Copilot Auto-Retry: [Dev] Simulate Rate-Limit Error"
+        "command": "copilotLongRun.simulatePause",
+        "title": "Copilot Long Run: [Dev] Simulate Pause"
       }
     ],
     "keybindings": [
       {
-        "command": "copilotAutoRetry.retryNow",
+        "command": "copilotLongRun.continueNow",
         "key": "ctrl+shift+r",
         "mac": "cmd+shift+r",
         "when": "chatIsVisible"

@@ -1,4 +1,4 @@
-# Copilot Auto-Retry — Copilot Instructions
+# Copilot Long Run — Copilot Instructions
 
 Instructions for the AI coding agent when working on this repository.
 
