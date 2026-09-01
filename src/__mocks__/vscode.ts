@@ -15,9 +15,13 @@ export class Uri {
 	readonly fragment: string;
 	readonly fsPath: string;
 
-	private constructor(filePath: string) {
-		this.scheme = "file";
-		this.authority = "";
+	private constructor(
+		filePath: string,
+		scheme = "file",
+		authority = "",
+	) {
+		this.scheme = scheme;
+		this.authority = authority;
 		this.path = filePath;
 		this.query = "";
 		this.fragment = "";
@@ -28,13 +32,28 @@ export class Uri {
 		return new Uri(filePath);
 	}
 
+	static from(components: {
+		scheme: string;
+		authority?: string;
+		path?: string;
+	}): Uri {
+		return new Uri(
+			components.path ?? "",
+			components.scheme,
+			components.authority ?? "",
+		);
+	}
+
 	static joinPath(base: Uri, ...pathSegments: string[]): Uri {
 		const joined = [base.path, ...pathSegments].join("/");
-		return new Uri(joined);
+		return new Uri(joined, base.scheme, base.authority);
 	}
 
 	toString(): string {
-		return `file://${this.path}`;
+		if (this.scheme === "file") {
+			return `file://${this.path}`;
+		}
+		return `${this.scheme}://${this.authority}${this.path}`;
 	}
 }
 
@@ -86,7 +105,23 @@ export const window = {
 		dispose: () => {},
 		appendLine: () => {},
 	}),
+	activeTextEditor: undefined as unknown,
+	tabGroups: {
+		activeTabGroup: { activeTab: undefined as unknown },
+	},
+	showTextDocument: async () => {},
 };
+
+export class TabInputText {
+	constructor(public readonly uri: Uri) {}
+}
+
+export class TabInputCustom {
+	constructor(
+		public readonly uri: Uri,
+		public readonly viewType: string,
+	) {}
+}
 
 export const commands = {
 	executeCommand: async () => {},

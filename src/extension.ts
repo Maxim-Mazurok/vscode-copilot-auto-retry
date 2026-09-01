@@ -1,10 +1,9 @@
 import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { readConfig, setEnabled } from "./configuration";
-import { RetryEngine } from "./retryEngine";
+import { ContinueEngine } from "./continueEngine";
 import { Guardrails } from "./guardrails";
 import { ActiveSessionResolver } from "./activeSessionResolver";
-import { NetworkMonitor } from "./networkMonitor";
 import { SessionWatcher } from "./sessionWatcher";
 import { StatusBar } from "./statusBar";
 
@@ -13,227 +12,167 @@ import { StatusBar } from "./statusBar";
  *
  * Architecture:
  *
- *   SessionWatcher ──▶ RetryEngine ──▶ chat.submit (focus + send prompt)
+ *   SessionWatcher ──▶ ContinueEngine ──▶ chat.submit (focus + send prompt)
  *   (filesystem)          │
- *        ▲                ▼
- *        │            Guardrails
- *   NetworkMonitor        │
- *        │                │
- *        └────────────────┘
- *             StatusBar (read-only view)
+ *                         ▼
+ *                     Guardrails
+ *                         │
+ *                     StatusBar (read-only view)
  *
  * The SessionWatcher monitors Copilot's chat session JSONL files on disk to
- * detect when a conversation has a failed response with a retryable error
- * (e.g., network error, rate limit). This is the PRIMARY error detection
- * mechanism — it gives direct visibility into conversation error state,
- * unlike the previous approach of inferring errors from service health.
- *
- * The NetworkMonitor provides a secondary signal: when connectivity drops
- * and recovers, it triggers a retry in case a chat request failed during
- * the outage and the session file hasn't been updated yet.
+ * detect when an agent session has PAUSED — the agent's turn ended, or it is
+ * presenting a continue button — and could be nudged forward. When a pause is
+ * detected, the ContinueEngine sends a directive continue message (with
+ * bounded exponential backoff) so a long-running agent task keeps going while
+ * you're away.
  *
  * The extension activates lazily (onStartupFinished) and begins watching
- * session files immediately. When a retryable error is detected, the retry
- * engine fires with bounded exponential backoff.
+ * session files immediately.
  */
 export function activate(context: vscode.ExtensionContext): void {
   const logger = new Logger();
-  logger.info("Copilot Auto-Retry activating...");
+  logger.setVerbose(readConfig().verboseLogging);
+  logger.info("Copilot Long Run activating...");
 
   const guardrails = new Guardrails(logger);
   const activeSessionResolver = new ActiveSessionResolver(logger);
-  activeSessionResolver.initialize(context.storageUri);
-  const retryEngine = new RetryEngine(logger, guardrails, activeSessionResolver);
-  const networkMonitor = new NetworkMonitor(logger);
+  activeSessionResolver.initialize(
+    context.storageUri,
+    context.globalStorageUri,
+  );
+  const continueEngine = new ContinueEngine(
+    logger,
+    guardrails,
+    activeSessionResolver,
+  );
   const sessionWatcher = new SessionWatcher(logger);
   const statusBar = new StatusBar(logger);
 
-  // ── Primary error detection: session file watcher ──────────────────────
+  // ── Pause detection: session file watcher ──────────────────────────────
   //
   // The SessionWatcher monitors `chatSessions/*.jsonl` files in VS Code's
-  // workspace storage. When a chat request result contains `errorDetails`
-  // with a retryable error code (e.g., "networkError") and a "Try Again"
-  // confirmation button, the watcher emits a retryable error event.
-  //
-  // This is the most reliable signal available: it reads the same data that
-  // populates the "Try Again" button in the chat UI.
+  // workspace storage. When the latest request completes (turn ended) or
+  // presents a continue button, the watcher emits a pause event.
 
-  sessionWatcher.onRetryableError((sessionError) => {
+  sessionWatcher.onPauseDetected((pause) => {
     const config = readConfig();
     if (!config.enabled) {
       return;
     }
 
     logger.info(
-      `Session watcher detected retryable error: code=${sessionError.errorCode} ` +
-      `in session ${sessionError.sessionId}`,
+      `Session watcher detected pause: reason=${pause.reason} ` +
+      `in session ${pause.sessionId}`,
     );
 
-    const trigger = RetryEngine.triggerFromSessionError(sessionError);
-    void retryEngine.triggerRetryCycle(trigger);
+    const trigger = ContinueEngine.triggerFromSessionPause(pause);
+    void continueEngine.triggerContinueCycle(trigger);
   });
 
-  // When the session watcher detects that a previously-errored session now
-  // has a successful result, cancel any active retry cycle for it.
-  sessionWatcher.onRecovery((sessionId) => {
+  // When the watcher detects that a previously-paused session resumed on its
+  // own (a newer request is in flight), cancel any active continue cycle.
+  sessionWatcher.onResume((sessionId) => {
     logger.info(
-      `Session ${sessionId} recovered — cancelling retry if active`,
+      `Session ${sessionId} resumed — cancelling continue if active`,
     );
-    retryEngine.cancelActiveCycle(`session ${sessionId} recovered`);
+    continueEngine.cancelActiveCycle(`session ${sessionId} resumed`);
   });
 
-  // ── Secondary signal: network recovery ─────────────────────────────────
-  //
-  // Chat panel errors like "net::ERR_NETWORK_CHANGED" are invisible to the
-  // extension API. The session file usually gets updated with errorDetails,
-  // but network recovery is still a useful secondary trigger in case the
-  // session file write is delayed.
-
-  networkMonitor.onRecovery(() => {
-    const config = readConfig();
-    if (!config.enabled) {
-      return;
-    }
-
-    // Only trigger a retry if the session watcher has detected an
-    // unresolved error in THIS window's chat sessions.  Without this
-    // gate, every open VS Code window would fire a retry when the
-    // network recovers — even windows where no chat request failed.
-    if (!sessionWatcher.hasActiveErrors()) {
-      logger.info(
-        "Network recovered but no active session errors in this window — skipping retry",
-      );
-      return;
-    }
-
-    logger.info(
-      "Network recovered after outage — triggering retry for active session error",
-    );
-
-    const trigger = RetryEngine.triggerFromNetworkRecovery();
-    void retryEngine.triggerRetryCycle(trigger);
-  });
-
-  // Wire network state into logging
-  networkMonitor.onStateChange((state) => {
-    if (state === "offline") {
-      logger.warn("Network offline detected — watching for recovery");
-    }
-  });
-
-  // Wire retry engine state changes → status bar
-  retryEngine.onStateChange((state) => {
-    const config = readConfig();
-    statusBar.updateDisplay(
-      state,
-      retryEngine.getCurrentAttempt(),
-      config.maxRetries,
-    );
+  // Wire continue engine state changes → status bar
+  continueEngine.onStateChange((state) => {
+    statusBar.updateDisplay(state, continueEngine.getQueueSize());
   });
 
   // ── Commands ───────────────────────────────────────────────────────────
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("copilotAutoRetry.enable", async () => {
+    vscode.commands.registerCommand("copilotLongRun.enable", async () => {
       await setEnabled(true);
       guardrails.reset();
-      networkMonitor.restart();
-      await sessionWatcher.start(context.storageUri);
+      await sessionWatcher.start(context.storageUri, context.globalStorageUri);
       statusBar.updateDisplay("idle");
       logger.info("Extension enabled by user");
-      vscode.window.showInformationMessage("Copilot Auto-Retry enabled.");
+      vscode.window.showInformationMessage("Copilot Long Run enabled.");
     }),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("copilotAutoRetry.disable", async () => {
+    vscode.commands.registerCommand("copilotLongRun.disable", async () => {
       await setEnabled(false);
-      retryEngine.cancelActiveCycle("disabled by user");
-      networkMonitor.stop();
+      continueEngine.clearAll("disabled by user");
       sessionWatcher.stop();
       statusBar.updateDisplay("disabled");
       logger.info("Extension disabled by user");
-      vscode.window.showInformationMessage("Copilot Auto-Retry disabled.");
+      vscode.window.showInformationMessage("Copilot Long Run disabled.");
     }),
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand(
-      "copilotAutoRetry.toggleEnabled",
+      "copilotLongRun.toggleEnabled",
       async () => {
         const config = readConfig();
         if (config.enabled) {
-          await vscode.commands.executeCommand("copilotAutoRetry.disable");
+          await vscode.commands.executeCommand("copilotLongRun.disable");
         } else {
-          await vscode.commands.executeCommand("copilotAutoRetry.enable");
+          await vscode.commands.executeCommand("copilotLongRun.enable");
         }
       },
     ),
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("copilotAutoRetry.showStatus", async () => {
+    vscode.commands.registerCommand("copilotLongRun.showStatus", async () => {
       const config = readConfig();
-      const engineState = retryEngine.getState();
-      const consecutiveFailures = guardrails.getConsecutiveFailures();
+      const engineState = continueEngine.getState();
+      const queueSize = continueEngine.getQueueSize();
 
       const lines: string[] = [
         `Enabled: ${config.enabled}`,
         `Engine state: ${engineState}`,
-        `Network: ${networkMonitor.getState()}`,
-        `Max retries: ${config.maxRetries}`,
+        `Queued sessions: ${queueSize}`,
         `Base delay: ${config.baseDelayMs}ms`,
-        `Consecutive failures: ${consecutiveFailures}`,
-        `Detection: session file watcher + network monitor`,
-        `Retry method: chat submit (focus + follow-up prompt)`,
+        `Continue message: ${config.continueMessage}`,
+        `Detection: session file watcher (pause detection)`,
+        `Continue method: focus session editor + chat submit`,
       ];
 
       logger.show();
       logger.info(`Status report:\n  ${lines.join("\n  ")}`);
       vscode.window.showInformationMessage(
-        `Copilot Auto-Retry: ${engineState} | Network: ${networkMonitor.getState()} | Failed cycles: ${consecutiveFailures}`,
+        `Copilot Long Run: ${engineState} | Queued: ${queueSize}`,
       );
     }),
   );
 
-  // Manual retry trigger — for when the user sees an error but auto-detection
-  // hasn't fired (e.g., session file write is delayed or the error type is
-  // not in our retryable list).
+  // Manual continue trigger — for when the user wants to nudge the agent
+  // forward without waiting for auto-detection.
   context.subscriptions.push(
-    vscode.commands.registerCommand("copilotAutoRetry.retryNow", async () => {
+    vscode.commands.registerCommand("copilotLongRun.continueNow", async () => {
       const config = readConfig();
       if (!config.enabled) {
         vscode.window.showWarningMessage(
-          "Copilot Auto-Retry is disabled. Enable it first.",
+          "Copilot Long Run is disabled. Enable it first.",
         );
         return;
       }
 
-      logger.info("Manual retry triggered by user");
+      logger.info("Manual continue triggered by user");
 
-      // If a cycle is already running, inform the user
-      if (retryEngine.getState() !== "idle") {
-        vscode.window.showInformationMessage(
-          `Copilot Auto-Retry: already ${retryEngine.getState()} ` +
-          `(attempt ${retryEngine.getCurrentAttempt()}/${config.maxRetries})`,
-        );
-        return;
-      }
-
-      const trigger = RetryEngine.triggerFromManualAction();
-      await retryEngine.triggerRetryCycle(trigger);
+      const trigger = ContinueEngine.triggerFromManualAction();
+      await continueEngine.triggerContinueCycle(trigger);
     }),
   );
 
-  // Dev command: simulate a session error to test the full retry pipeline.
+  // Dev command: simulate a session pause to test the full continue pipeline.
   context.subscriptions.push(
     vscode.commands.registerCommand(
-      "copilotAutoRetry.simulateError",
+      "copilotLongRun.simulatePause",
       async () => {
         const config = readConfig();
         if (!config.enabled) {
           vscode.window.showWarningMessage(
-            "Copilot Auto-Retry is disabled. Enable it first.",
+            "Copilot Long Run is disabled. Enable it first.",
           );
           return;
         }
@@ -241,26 +180,28 @@ export function activate(context: vscode.ExtensionContext): void {
         logger.show();
         logger.info("=== SIMULATION START ===");
         logger.info(
-          "Injecting synthetic session error into the retry pipeline...",
+          "Injecting synthetic session pause into the continue pipeline...",
         );
         logger.info(
-          "Retry method: focus chat panel → submit follow-up prompt",
+          "Continue method: focus chat panel → submit follow-up prompt",
         );
 
-        const trigger: ReturnType<typeof RetryEngine.triggerFromSessionError> = {
-          source: "session-error",
-          errorCode: "networkError",
-          detail: "[SIMULATED] Network error in chat session",
+        const trigger: ReturnType<
+          typeof ContinueEngine.triggerFromSessionPause
+        > = {
+          source: "session-pause",
+          reason: "turn-ended",
+          detail: "[SIMULATED] Agent turn ended in chat session",
           timestamp: Date.now(),
         };
 
         vscode.window.showInformationMessage(
-          "Copilot Auto-Retry: simulating error. Watch the output channel and status bar.",
+          "Copilot Long Run: simulating pause. Watch the output channel and status bar.",
         );
 
-        await retryEngine.triggerRetryCycle(trigger);
+        await continueEngine.triggerContinueCycle(trigger);
         logger.info(
-          "Retry cycle triggered. Watch the status bar and output channel for progress.",
+          "Continue cycle triggered. Watch the status bar and output channel for progress.",
         );
       },
     ),
@@ -269,29 +210,27 @@ export function activate(context: vscode.ExtensionContext): void {
   // React to configuration changes
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (!event.affectsConfiguration("copilotAutoRetry")) {
+      if (!event.affectsConfiguration("copilotLongRun")) {
         return;
       }
 
       logger.info("Configuration changed — applying");
       const config = readConfig();
+      logger.setVerbose(config.verboseLogging);
 
       if (!config.enabled) {
-        retryEngine.cancelActiveCycle("disabled via settings");
-        networkMonitor.stop();
+        continueEngine.clearAll("disabled via settings");
         sessionWatcher.stop();
         statusBar.updateDisplay("disabled");
       } else {
-        networkMonitor.restart();
-        void sessionWatcher.start(context.storageUri);
-        statusBar.updateDisplay(retryEngine.getState());
+        void sessionWatcher.start(context.storageUri, context.globalStorageUri);
+        statusBar.updateDisplay(continueEngine.getState());
       }
     }),
   );
 
   // Register disposables
-  context.subscriptions.push(retryEngine);
-  context.subscriptions.push(networkMonitor);
+  context.subscriptions.push(continueEngine);
   context.subscriptions.push(sessionWatcher);
   context.subscriptions.push(statusBar);
   context.subscriptions.push({ dispose: () => logger.dispose() });
@@ -300,14 +239,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const config = readConfig();
 
   if (config.enabled) {
-    networkMonitor.start();
-    void sessionWatcher.start(context.storageUri);
+    void sessionWatcher.start(context.storageUri, context.globalStorageUri);
     statusBar.updateDisplay("idle");
   } else {
     statusBar.updateDisplay("disabled");
   }
 
-  logger.info("Copilot Auto-Retry activated (detection: session file watcher)");
+  logger.info("Copilot Long Run activated (detection: session file watcher)");
 }
 
 export function deactivate(): void {

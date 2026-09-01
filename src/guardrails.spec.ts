@@ -2,15 +2,14 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { Guardrails } from "./guardrails";
 import { Logger } from "./logger";
 
-/**
- * Mock the configuration module to control readConfig return values.
- */
 vi.mock("./configuration", () => ({
 	readConfig: vi.fn().mockReturnValue({
 		enabled: true,
-		maxRetries: 3,
+		continueMessage: "Keep going until the task is fully complete.",
+		maxContinues: 3,
 		baseDelayMs: 2000,
 		maxDelayMs: 30_000,
+		verboseLogging: false,
 	}),
 }));
 
@@ -18,22 +17,25 @@ import { readConfig } from "./configuration";
 
 const mockedReadConfig = vi.mocked(readConfig);
 
-function createGuardrails(): Guardrails {
-	const logger = new Logger();
-	return new Guardrails(logger);
+function baseConfig() {
+	return {
+		enabled: true,
+		continueMessage: "Keep going until the task is fully complete.",
+		maxContinues: 3,
+		baseDelayMs: 2000,
+		maxDelayMs: 30_000,
+		verboseLogging: false,
+	};
 }
 
-/* ═══════════════════════════════ Tests ═══════════════════════════════════ */
+function createGuardrails(): Guardrails {
+	return new Guardrails(new Logger());
+}
 
 describe("Guardrails", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockedReadConfig.mockReturnValue({
-			enabled: true,
-			maxRetries: 3,
-			baseDelayMs: 2000,
-			maxDelayMs: 30_000,
-		});
+		mockedReadConfig.mockReturnValue(baseConfig());
 		vi.useFakeTimers();
 	});
 
@@ -41,219 +43,62 @@ describe("Guardrails", () => {
 		vi.useRealTimers();
 	});
 
-	describe("canRetry", () => {
-		it("returns true when all guards pass", () => {
+	describe("canContinue", () => {
+		it("returns true when enabled and under the rate cap", () => {
 			const guardrails = createGuardrails();
-
-			expect(guardrails.canRetry()).toBe(true);
+			expect(guardrails.canContinue()).toBe(true);
 		});
 
-		it("returns false when extension is disabled", () => {
-			mockedReadConfig.mockReturnValue({
-				enabled: false,
-				maxRetries: 3,
-				baseDelayMs: 2000,
-				maxDelayMs: 30_000,
-			});
-
+		it("returns false when the extension is disabled", () => {
+			mockedReadConfig.mockReturnValue({ ...baseConfig(), enabled: false });
 			const guardrails = createGuardrails();
-
-			expect(guardrails.canRetry()).toBe(false);
+			expect(guardrails.canContinue()).toBe(false);
 		});
 
-		it("returns false during cooldown after exhausted cycle", () => {
+		it("does not block repeatedly (no cooldown, no min-interval)", () => {
 			const guardrails = createGuardrails();
-
-			guardrails.recordCycleExhausted();
-
-			expect(guardrails.canRetry()).toBe(false);
+			// Several back-to-back attempts remain allowed (indefinite continuation).
+			for (let i = 0; i < 10; i++) {
+				expect(guardrails.canContinue()).toBe(true);
+				guardrails.recordContinueAttempt();
+			}
 		});
 
-		it("returns true after cooldown period expires (60s)", () => {
+		it("engages loop protection after 30 continues in a minute, then clears", () => {
 			const guardrails = createGuardrails();
+			for (let i = 0; i < 30; i++) {
+				guardrails.recordContinueAttempt();
+			}
+			expect(guardrails.canContinue()).toBe(false);
 
-			guardrails.recordCycleExhausted();
-			expect(guardrails.canRetry()).toBe(false);
-
-			// Advance past the 60-second cooldown
+			// After the rolling window passes, it clears automatically.
 			vi.advanceTimersByTime(61_000);
-
-			expect(guardrails.canRetry()).toBe(true);
-		});
-
-		it("returns false when absolute rate limit is reached (15 retries/minute)", () => {
-			const guardrails = createGuardrails();
-
-			// Record 15 retries, each spaced > 1s apart to satisfy minimum interval
-			for (let i = 0; i < 15; i++) {
-				guardrails.recordRetryAttempt();
-				vi.advanceTimersByTime(1100);
-			}
-
-			expect(guardrails.canRetry()).toBe(false);
-		});
-
-		it("returns false when minimum interval (1s) has not elapsed", () => {
-			const guardrails = createGuardrails();
-
-			guardrails.recordRetryAttempt();
-			// Don't advance time — still within 1s minimum interval
-
-			expect(guardrails.canRetry()).toBe(false);
-		});
-
-		it("returns true after minimum interval elapses", () => {
-			const guardrails = createGuardrails();
-
-			guardrails.recordRetryAttempt();
-			vi.advanceTimersByTime(1100);
-
-			expect(guardrails.canRetry()).toBe(true);
-		});
-
-		it("prunes old entries from the sliding window after 60 seconds", () => {
-			const guardrails = createGuardrails();
-
-			// Record 14 retries — just under limit
-			for (let i = 0; i < 14; i++) {
-				guardrails.recordRetryAttempt();
-				vi.advanceTimersByTime(1100);
-			}
-			expect(guardrails.canRetry()).toBe(true);
-
-			// One more brings us to 15 — now blocked
-			guardrails.recordRetryAttempt();
-			vi.advanceTimersByTime(1100);
-			expect(guardrails.canRetry()).toBe(false);
-
-			// Advance past 60 seconds so the oldest entries fall off the window
-			vi.advanceTimersByTime(60_000);
-			expect(guardrails.canRetry()).toBe(true);
+			expect(guardrails.canContinue()).toBe(true);
 		});
 	});
 
 	describe("calculateDelay", () => {
-		it("returns baseDelayMs * 0.8 for attempt 1 with minimum jitter", () => {
+		it("returns the base delay with light jitter (±15%)", () => {
 			const guardrails = createGuardrails();
 
-			// Math.random() = 0 → jitter factor = 0.8 (minimum)
 			vi.spyOn(Math, "random").mockReturnValue(0);
+			expect(guardrails.calculateDelay()).toBe(1700); // 2000 * 0.85
 
-			const delay = guardrails.calculateDelay(1);
-
-			// base * 2^0 * 0.8 = 2000 * 1 * 0.8 = 1600
-			expect(delay).toBe(1600);
-		});
-
-		it("doubles delay for each subsequent attempt (at fixed jitter)", () => {
-			const guardrails = createGuardrails();
-
-			// Math.random() = 0.5 → jitter factor = 1.0 (neutral)
-			vi.spyOn(Math, "random").mockReturnValue(0.5);
-
-			const delayAttempt1 = guardrails.calculateDelay(1);
-			const delayAttempt2 = guardrails.calculateDelay(2);
-			const delayAttempt3 = guardrails.calculateDelay(3);
-
-			expect(delayAttempt1).toBe(2000); // 2000 * 1 * 1.0
-			expect(delayAttempt2).toBe(4000); // 2000 * 2 * 1.0
-			expect(delayAttempt3).toBe(8000); // 2000 * 4 * 1.0
-		});
-
-		it("clamps delay at maxDelayMs", () => {
-			const guardrails = createGuardrails();
-
-			// At jitter factor 1.0
-			vi.spyOn(Math, "random").mockReturnValue(0.5);
-
-			// Attempt 5: 2000 * 2^4 = 32000, clamped to 30000
-			const delay = guardrails.calculateDelay(5);
-
-			expect(delay).toBe(30_000);
-		});
-
-		it("enforces minimum delay of 1000ms even with very low base", () => {
-			mockedReadConfig.mockReturnValue({
-				enabled: true,
-				maxRetries: 3,
-				baseDelayMs: 100,
-				maxDelayMs: 30_000,
-			});
-
-			const guardrails = createGuardrails();
-
-			// Minimum jitter: 100 * 1 * 0.8 = 80, floored to 1000
-			vi.spyOn(Math, "random").mockReturnValue(0);
-
-			const delay = guardrails.calculateDelay(1);
-
-			expect(delay).toBe(1000);
-		});
-
-		it("adds jitter within ±20% range", () => {
-			const guardrails = createGuardrails();
-
-			// Minimum jitter (random=0 → factor=0.8)
-			vi.spyOn(Math, "random").mockReturnValue(0);
-			const minimumDelay = guardrails.calculateDelay(1);
-
-			// Maximum jitter (random=1 → factor=1.2)
 			vi.spyOn(Math, "random").mockReturnValue(1);
-			const maximumDelay = guardrails.calculateDelay(1);
-
-			// base=2000, attempt 1: exponential = 2000
-			// min: 2000 * 0.8 = 1600
-			// max: 2000 * 1.2 = 2400
-			expect(minimumDelay).toBe(1600);
-			expect(maximumDelay).toBe(2400);
-		});
-	});
-
-	describe("recordCycleExhausted", () => {
-		it("increments consecutive failure counter", () => {
-			const guardrails = createGuardrails();
-
-			expect(guardrails.getConsecutiveFailures()).toBe(0);
-
-			guardrails.recordCycleExhausted();
-			expect(guardrails.getConsecutiveFailures()).toBe(1);
-
-			// Need to advance past cooldown before next cycle can be recorded
-			vi.advanceTimersByTime(61_000);
-			guardrails.recordCycleExhausted();
-			expect(guardrails.getConsecutiveFailures()).toBe(2);
-		});
-	});
-
-	describe("recordSuccess", () => {
-		it("resets consecutive failure counter", () => {
-			const guardrails = createGuardrails();
-
-			guardrails.recordCycleExhausted();
-			vi.advanceTimersByTime(61_000);
-			guardrails.recordCycleExhausted();
-			expect(guardrails.getConsecutiveFailures()).toBe(2);
-
-			guardrails.recordSuccess();
-
-			expect(guardrails.getConsecutiveFailures()).toBe(0);
+			expect(guardrails.calculateDelay()).toBe(2300); // 2000 * 1.15
 		});
 	});
 
 	describe("reset", () => {
-		it("clears all state (cooldown, rate limiter, consecutive failures)", () => {
+		it("clears the rate-limit window", () => {
 			const guardrails = createGuardrails();
-
-			// Build up some state
-			guardrails.recordRetryAttempt();
-			guardrails.recordCycleExhausted();
-			expect(guardrails.canRetry()).toBe(false); // In cooldown
-			expect(guardrails.getConsecutiveFailures()).toBe(1);
+			for (let i = 0; i < 30; i++) {
+				guardrails.recordContinueAttempt();
+			}
+			expect(guardrails.canContinue()).toBe(false);
 
 			guardrails.reset();
-
-			expect(guardrails.canRetry()).toBe(true);
-			expect(guardrails.getConsecutiveFailures()).toBe(0);
+			expect(guardrails.canContinue()).toBe(true);
 		});
 	});
 });

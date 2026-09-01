@@ -31,20 +31,42 @@ export class ActiveSessionResolver {
 	constructor(private readonly logger: Logger) {}
 
 	/**
-	 * Initialize with the extension storage URI. Derives the path to state.vscdb.
+	 * Initialize with the extension storage URIs. Derives the path to the
+	 * state.vscdb that holds the active-session pointer.
+	 *
+	 * When a folder is open, that is `workspaceStorage/<hash>/state.vscdb`.
+	 * In an empty window it is the global `globalStorage/state.vscdb`.
 	 */
-	initialize(extensionStorageUri: vscode.Uri | undefined): void {
-		if (!extensionStorageUri) {
+	initialize(
+		extensionStorageUri: vscode.Uri | undefined,
+		extensionGlobalStorageUri?: vscode.Uri | undefined,
+	): void {
+		if (extensionStorageUri) {
+			// workspaceStorage/<hash>/<ext-id>/ → workspaceStorage/<hash>/state.vscdb
+			const workspaceStorageRoot = vscode.Uri.joinPath(
+				extensionStorageUri,
+				"..",
+			);
+			this.databasePath = vscode.Uri.joinPath(
+				workspaceStorageRoot,
+				"state.vscdb",
+			).fsPath;
+		} else if (extensionGlobalStorageUri) {
+			// globalStorage/<ext-id>/ → globalStorage/state.vscdb
+			const globalStorageRoot = vscode.Uri.joinPath(
+				extensionGlobalStorageUri,
+				"..",
+			);
+			this.databasePath = vscode.Uri.joinPath(
+				globalStorageRoot,
+				"state.vscdb",
+			).fsPath;
+		} else {
 			this.logger.warn(
-				"ActiveSessionResolver: no workspace storage URI — session verification disabled",
+				"ActiveSessionResolver: no storage URI — session verification disabled",
 			);
 			return;
 		}
-
-		// Navigate: workspaceStorage/<hash>/<ext-id>/ → workspaceStorage/<hash>/state.vscdb
-		const workspaceStorageRoot = vscode.Uri.joinPath(extensionStorageUri, "..");
-		const databaseUri = vscode.Uri.joinPath(workspaceStorageRoot, "state.vscdb");
-		this.databasePath = databaseUri.fsPath;
 
 		this.logger.debug(
 			`ActiveSessionResolver initialized: ${this.databasePath}`,

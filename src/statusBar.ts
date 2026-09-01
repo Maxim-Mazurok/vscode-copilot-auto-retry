@@ -1,16 +1,15 @@
 import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { readConfig } from "./configuration";
-import { RetryEngineState } from "./retryEngine";
+import { ContinueEngineState } from "./continueEngine";
 
 /**
  * Status bar item that shows the extension's current state.
  *
  * States:
  *   $(check)  — Idle, monitoring normally
- *   $(sync~spin) — Retry in progress
+ *   $(sync~spin) — Continue in progress
  *   $(clock)  — Waiting for backoff timer
- *   $(warning) — In cooldown after exhausting retries
  *   $(x)  — Disabled
  */
 export class StatusBar implements vscode.Disposable {
@@ -21,7 +20,7 @@ export class StatusBar implements vscode.Disposable {
       vscode.StatusBarAlignment.Right,
       50,
     );
-    this.statusBarItem.command = "copilotAutoRetry.toggleEnabled";
+    this.statusBarItem.command = "copilotLongRun.toggleEnabled";
     this.updateDisplay("idle");
     this.statusBarItem.show();
   }
@@ -29,57 +28,46 @@ export class StatusBar implements vscode.Disposable {
   /**
    * Update the status bar to reflect the current engine state.
    */
-  updateDisplay(
-    engineState: RetryEngineState,
-    currentAttempt?: number,
-    maxAttempts?: number,
-  ): void {
+  updateDisplay(engineState: ContinueEngineState, queueSize = 0): void {
     const config = readConfig();
 
     if (!config.enabled) {
-      this.statusBarItem.text = "$(x) Copilot Retry: Off";
-      this.statusBarItem.tooltip = "Copilot Auto-Retry is disabled. Click to enable.";
+      this.statusBarItem.text = "$(x) Long Run: Off";
+      this.statusBarItem.tooltip = "Copilot Long Run is disabled. Click to enable.";
       this.statusBarItem.backgroundColor = undefined;
       return;
     }
 
+    const queueSuffix = queueSize > 0 ? ` (+${queueSize})` : "";
+
     switch (engineState) {
       case "idle":
-        this.statusBarItem.text = "$(check) Copilot Retry";
-        this.statusBarItem.tooltip = "Copilot Auto-Retry: monitoring. Click to toggle.";
+        this.statusBarItem.text = "$(check) Long Run";
+        this.statusBarItem.tooltip = "Copilot Long Run: monitoring. Click to toggle.";
         this.statusBarItem.backgroundColor = undefined;
         break;
 
       case "waiting":
-        this.statusBarItem.text = `$(clock) Retry ${currentAttempt ?? "?"}/${maxAttempts ?? "?"}`;
+        this.statusBarItem.text = `$(clock) Continue${queueSuffix}`;
         this.statusBarItem.tooltip =
-          "Copilot Auto-Retry: waiting for backoff timer before next attempt.";
+          "Copilot Long Run: waiting briefly before sending continue.";
         this.statusBarItem.backgroundColor = new vscode.ThemeColor(
           "statusBarItem.warningBackground",
         );
         break;
 
-      case "retrying":
-        this.statusBarItem.text = `$(sync~spin) Retrying ${currentAttempt ?? "?"}/${maxAttempts ?? "?"}`;
+      case "continuing":
+        this.statusBarItem.text = `$(sync~spin) Continuing${queueSuffix}`;
         this.statusBarItem.tooltip =
-          "Copilot Auto-Retry: executing retry command now.";
+          "Copilot Long Run: sending continue message now.";
         this.statusBarItem.backgroundColor = new vscode.ThemeColor(
           "statusBarItem.warningBackground",
-        );
-        break;
-
-      case "cooldown":
-        this.statusBarItem.text = "$(warning) Retry Cooldown";
-        this.statusBarItem.tooltip =
-          "Copilot Auto-Retry: retries exhausted, in cooldown period. Will resume monitoring soon.";
-        this.statusBarItem.backgroundColor = new vscode.ThemeColor(
-          "statusBarItem.errorBackground",
         );
         break;
 
       case "disabled":
-        this.statusBarItem.text = "$(x) Copilot Retry: Off";
-        this.statusBarItem.tooltip = "Copilot Auto-Retry is disabled. Click to enable.";
+        this.statusBarItem.text = "$(x) Long Run: Off";
+        this.statusBarItem.tooltip = "Copilot Long Run is disabled. Click to enable.";
         this.statusBarItem.backgroundColor = undefined;
         break;
     }
