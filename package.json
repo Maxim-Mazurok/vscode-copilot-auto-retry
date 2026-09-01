@@ -104,7 +104,8 @@
     "test": "npx -y vitest run",
     "test:watch": "npx -y vitest",
     "lint": "npx -y eslint src --ext ts",
-    "package": "npx -y @vscode/vsce package --no-dependencies"
+    "package": "npx -y @vscode/vsce@3.2.1 package --no-dependencies",
+    "install-local": "npm run compile && npm run package && code --install-extension vscode-copilot-long-run-0.1.0.vsix --force"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
