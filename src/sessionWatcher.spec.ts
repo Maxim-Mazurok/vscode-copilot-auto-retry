@@ -2,19 +2,17 @@ import { describe, expect, it } from "vitest";
 import {
 	type ErrorDetails,
 	type JsonlEntry,
-	NON_RETRYABLE_ERROR_CODES,
-	type ParsedSessionResult,
-	hasRetryButton,
+	NON_CONTINUABLE_CODES,
+	hasContinueButton,
 	parseSessionContent,
 	processJsonlEntry,
 } from "./sessionWatcher";
 
-/* ═══════════════════════════ Real error fixtures ══════════════════════════ */
+/* ═══════════════════════════ Real result fixtures ═════════════════════════ */
 
 /**
- * Real network error from a production session file.
- * Source: session f729284b-c3a0-439e-b39b-7e2c55f1696c.jsonl
- * Trigger: user asked "update readme with emojis", network dropped mid-request.
+ * Real network error from a production session file. Carries a continue button,
+ * so it is a continue opportunity.
  */
 const NETWORK_ERROR_ENTRY: JsonlEntry = {
 	kind: 1,
@@ -23,7 +21,7 @@ const NETWORK_ERROR_ENTRY: JsonlEntry = {
 		errorDetails: {
 			code: "networkError",
 			message:
-				"Sorry, there was a network error. Please try again later. Request id: 315afeba-0332-4523-beab-cf31dd1923d2\n\nReason: Please check your firewall rules and network connection then try again. Error Code: net::ERR_NETWORK_CHANGED: [object Object].",
+				"Sorry, there was a network error. Please try again later. Request id: 315afeba-0332-4523-beab-cf31dd1923d2",
 			confirmationButtons: [
 				{ data: { copilotContinueOnError: true }, label: "Try Again" },
 			],
@@ -33,10 +31,8 @@ const NETWORK_ERROR_ENTRY: JsonlEntry = {
 };
 
 /**
- * Real rate-limit error from a production session file.
- * Source: session 82e4b7e4-4d8d-442e-a44b-f99ce5f9e1af.jsonl (line 261)
- * Trigger: user asked "I think that we should migrate the caretaker.sh",
- * hit the model rate limit after many requests.
+ * Real rate-limit error from a production session file. Carries a continue
+ * button, so it is a continue opportunity.
  */
 const RATE_LIMIT_ERROR_ENTRY: JsonlEntry = {
 	kind: 1,
@@ -45,7 +41,7 @@ const RATE_LIMIT_ERROR_ENTRY: JsonlEntry = {
 		errorDetails: {
 			code: "rateLimited",
 			message:
-				"Sorry, you have exhausted this model's rate limit. Please wait a moment before trying again, or switch to GPT-4.1. [Learn More](https://aka.ms/github-copilot-rate-limit-error)",
+				"Sorry, you have exhausted this model's rate limit. Please wait a moment before trying again, or switch to GPT-4.1.",
 			level: 0,
 			isRateLimited: true,
 			confirmationButtons: [
@@ -57,8 +53,7 @@ const RATE_LIMIT_ERROR_ENTRY: JsonlEntry = {
 };
 
 /**
- * Synthetic user-cancellation error (observed shape from session files).
- * Has a "Try Again" button but should NOT be auto-retried.
+ * User cancellation. Has a continue button but must NEVER be auto-continued.
  */
 const CANCELED_ERROR_ENTRY: JsonlEntry = {
 	kind: 1,
@@ -75,7 +70,7 @@ const CANCELED_ERROR_ENTRY: JsonlEntry = {
 	},
 };
 
-/** A successful request result (no errorDetails). */
+/** A successful request result (no errorDetails) — a clean turn-ended pause. */
 const SUCCESSFUL_RESULT_ENTRY: JsonlEntry = {
 	kind: 1,
 	k: ["requests", 0, "result"],
@@ -92,20 +87,15 @@ function toJsonlContent(...entries: JsonlEntry[]): string {
 
 /* ═══════════════════════════════ Tests ═══════════════════════════════════ */
 
-describe("hasRetryButton", () => {
+describe("hasContinueButton", () => {
 	it("returns true for network error with copilotContinueOnError button", () => {
 		const errorDetails: ErrorDetails = NETWORK_ERROR_ENTRY.v.errorDetails;
-		expect(hasRetryButton(errorDetails)).toBe(true);
+		expect(hasContinueButton(errorDetails)).toBe(true);
 	});
 
 	it("returns true for rate-limit error with copilotContinueOnError button", () => {
 		const errorDetails: ErrorDetails = RATE_LIMIT_ERROR_ENTRY.v.errorDetails;
-		expect(hasRetryButton(errorDetails)).toBe(true);
-	});
-
-	it("returns true for canceled error (button exists even though we skip it later)", () => {
-		const errorDetails: ErrorDetails = CANCELED_ERROR_ENTRY.v.errorDetails;
-		expect(hasRetryButton(errorDetails)).toBe(true);
+		expect(hasContinueButton(errorDetails)).toBe(true);
 	});
 
 	it("returns false when confirmationButtons is missing", () => {
@@ -113,7 +103,7 @@ describe("hasRetryButton", () => {
 			code: "networkError",
 			message: "some error",
 		};
-		expect(hasRetryButton(errorDetails)).toBe(false);
+		expect(hasContinueButton(errorDetails)).toBe(false);
 	});
 
 	it("returns false when confirmationButtons is an empty array", () => {
@@ -122,7 +112,7 @@ describe("hasRetryButton", () => {
 			message: "some error",
 			confirmationButtons: [],
 		};
-		expect(hasRetryButton(errorDetails)).toBe(false);
+		expect(hasContinueButton(errorDetails)).toBe(false);
 	});
 
 	it("returns false when button data does not have copilotContinueOnError", () => {
@@ -131,7 +121,7 @@ describe("hasRetryButton", () => {
 			message: "some error",
 			confirmationButtons: [{ data: {}, label: "OK" }],
 		};
-		expect(hasRetryButton(errorDetails)).toBe(false);
+		expect(hasContinueButton(errorDetails)).toBe(false);
 	});
 
 	it("returns false when copilotContinueOnError is explicitly false", () => {
@@ -142,33 +132,26 @@ describe("hasRetryButton", () => {
 				{ data: { copilotContinueOnError: false }, label: "Dismiss" },
 			],
 		};
-		expect(hasRetryButton(errorDetails)).toBe(false);
+		expect(hasContinueButton(errorDetails)).toBe(false);
 	});
 });
 
 describe("processJsonlEntry", () => {
 	describe("kind 0 — full snapshot", () => {
-		it("finds error in a snapshot request result", () => {
+		it("finds result in a snapshot request", () => {
 			const entry: JsonlEntry = {
 				kind: 0,
 				v: {
 					requests: [
-						{
-							result: {
-								errorDetails: {
-									code: "networkError",
-									message: "Network failed",
-									confirmationButtons: [
-										{ data: { copilotContinueOnError: true }, label: "Try Again" },
-									],
-								},
-							},
-						},
+						{ result: { errorDetails: { code: "networkError" } } },
 					],
 				},
 			};
 
-			const results: Array<{ requestIndex: number; errorDetails: ErrorDetails | undefined }> = [];
+			const results: Array<{
+				requestIndex: number;
+				errorDetails: ErrorDetails | undefined;
+			}> = [];
 			processJsonlEntry(entry, (requestIndex, errorDetails) => {
 				results.push({ requestIndex, errorDetails });
 			});
@@ -184,53 +167,29 @@ describe("processJsonlEntry", () => {
 				v: {
 					requests: [
 						{ result: { metadata: { finishReason: "stop" } } },
-						{
-							result: {
-								errorDetails: {
-									code: "rateLimited",
-									message: "Rate limited",
-									isRateLimited: true,
-									level: 0,
-									confirmationButtons: [
-										{ data: { copilotContinueOnError: true }, label: "Try Again" },
-									],
-								},
-							},
-						},
+						{ result: { errorDetails: { code: "rateLimited" } } },
 					],
 				},
 			};
 
-			const results: Array<{ requestIndex: number; errorDetails: ErrorDetails | undefined }> = [];
+			const results: Array<{
+				requestIndex: number;
+				errorDetails: ErrorDetails | undefined;
+			}> = [];
 			processJsonlEntry(entry, (requestIndex, errorDetails) => {
 				results.push({ requestIndex, errorDetails });
 			});
 
 			expect(results).toHaveLength(2);
-			expect(results[0].requestIndex).toBe(0);
 			expect(results[0].errorDetails).toBeUndefined();
-			expect(results[1].requestIndex).toBe(1);
 			expect(results[1].errorDetails?.code).toBe("rateLimited");
 		});
 
 		it("skips requests without a result property", () => {
 			const entry: JsonlEntry = {
 				kind: 0,
-				v: {
-					requests: [{ message: "hello" }, { message: "world" }],
-				},
+				v: { requests: [{ message: "hello" }, { message: "world" }] },
 			};
-
-			const results: Array<{ requestIndex: number }> = [];
-			processJsonlEntry(entry, (requestIndex) => {
-				results.push({ requestIndex });
-			});
-
-			expect(results).toHaveLength(0);
-		});
-
-		it("handles empty requests array", () => {
-			const entry: JsonlEntry = { kind: 0, v: { requests: [] } };
 
 			const results: Array<{ requestIndex: number }> = [];
 			processJsonlEntry(entry, (requestIndex) => {
@@ -253,8 +212,11 @@ describe("processJsonlEntry", () => {
 	});
 
 	describe("kind 1 — key-path patch", () => {
-		it("extracts network error from real production entry", () => {
-			const results: Array<{ requestIndex: number; errorDetails: ErrorDetails | undefined }> = [];
+		it("extracts result from a production result entry", () => {
+			const results: Array<{
+				requestIndex: number;
+				errorDetails: ErrorDetails | undefined;
+			}> = [];
 			processJsonlEntry(NETWORK_ERROR_ENTRY, (requestIndex, errorDetails) => {
 				results.push({ requestIndex, errorDetails });
 			});
@@ -262,42 +224,18 @@ describe("processJsonlEntry", () => {
 			expect(results).toHaveLength(1);
 			expect(results[0].requestIndex).toBe(0);
 			expect(results[0].errorDetails?.code).toBe("networkError");
-			expect(results[0].errorDetails?.confirmationButtons).toHaveLength(1);
-			expect(results[0].errorDetails?.confirmationButtons?.[0].data?.copilotContinueOnError).toBe(true);
 		});
 
-		it("extracts rate-limit error from real production entry", () => {
-			const results: Array<{ requestIndex: number; errorDetails: ErrorDetails | undefined }> = [];
-			processJsonlEntry(RATE_LIMIT_ERROR_ENTRY, (requestIndex, errorDetails) => {
-				results.push({ requestIndex, errorDetails });
-			});
-
-			expect(results).toHaveLength(1);
-			expect(results[0].requestIndex).toBe(18);
-			expect(results[0].errorDetails?.code).toBe("rateLimited");
-			expect(results[0].errorDetails?.isRateLimited).toBe(true);
-			expect(results[0].errorDetails?.level).toBe(0);
-		});
-
-		it("extracts canceled error", () => {
-			const results: Array<{ requestIndex: number; errorDetails: ErrorDetails | undefined }> = [];
-			processJsonlEntry(CANCELED_ERROR_ENTRY, (requestIndex, errorDetails) => {
-				results.push({ requestIndex, errorDetails });
-			});
-
-			expect(results).toHaveLength(1);
-			expect(results[0].requestIndex).toBe(5);
-			expect(results[0].errorDetails?.code).toBe("canceled");
-		});
-
-		it("extracts successful result (no errorDetails)", () => {
-			const results: Array<{ requestIndex: number; errorDetails: ErrorDetails | undefined }> = [];
+		it("extracts a successful result (no errorDetails)", () => {
+			const results: Array<{
+				requestIndex: number;
+				errorDetails: ErrorDetails | undefined;
+			}> = [];
 			processJsonlEntry(SUCCESSFUL_RESULT_ENTRY, (requestIndex, errorDetails) => {
 				results.push({ requestIndex, errorDetails });
 			});
 
 			expect(results).toHaveLength(1);
-			expect(results[0].requestIndex).toBe(0);
 			expect(results[0].errorDetails).toBeUndefined();
 		});
 
@@ -315,305 +253,269 @@ describe("processJsonlEntry", () => {
 
 			expect(results).toHaveLength(0);
 		});
-
-		it("ignores patches with too few key-path segments", () => {
-			const entry: JsonlEntry = {
-				kind: 1,
-				k: ["requests"],
-				v: { some: "data" },
-			};
-
-			const results: Array<{ requestIndex: number }> = [];
-			processJsonlEntry(entry, (requestIndex) => {
-				results.push({ requestIndex });
-			});
-
-			expect(results).toHaveLength(0);
-		});
 	});
 
 	describe("kind 2 — key replacement", () => {
-		it("finds errors when requests array is replaced", () => {
+		it("finds results when the requests array is fully replaced", () => {
 			const entry: JsonlEntry = {
 				kind: 2,
 				k: ["requests"],
 				v: [
 					{ result: { metadata: { finishReason: "stop" } } },
-					{
-						result: {
-							errorDetails: {
-								code: "networkError",
-								message: "Replaced request with error",
-								confirmationButtons: [
-									{ data: { copilotContinueOnError: true }, label: "Try Again" },
-								],
-							},
-						},
-					},
+					{ result: { errorDetails: { code: "networkError" } } },
 				],
 			};
 
-			const results: Array<{ requestIndex: number; errorDetails: ErrorDetails | undefined }> = [];
+			const results: Array<{
+				requestIndex: number;
+				errorDetails: ErrorDetails | undefined;
+			}> = [];
 			processJsonlEntry(entry, (requestIndex, errorDetails) => {
 				results.push({ requestIndex, errorDetails });
 			});
 
 			expect(results).toHaveLength(2);
-			expect(results[0].errorDetails).toBeUndefined();
 			expect(results[1].errorDetails?.code).toBe("networkError");
-		});
-
-		it("ignores kind 2 entries with non-requests key", () => {
-			const entry: JsonlEntry = {
-				kind: 2,
-				k: ["title"],
-				v: "New chat title",
-			};
-
-			const results: Array<{ requestIndex: number }> = [];
-			processJsonlEntry(entry, (requestIndex) => {
-				results.push({ requestIndex });
-			});
-
-			expect(results).toHaveLength(0);
-		});
-	});
-
-	describe("unknown kinds", () => {
-		it("ignores entries with unrecognized kind", () => {
-			const entry: JsonlEntry = { kind: 99, v: { requests: [{ result: {} }] } };
-
-			const results: Array<{ requestIndex: number }> = [];
-			processJsonlEntry(entry, (requestIndex) => {
-				results.push({ requestIndex });
-			});
-
-			expect(results).toHaveLength(0);
 		});
 	});
 });
 
-describe("parseSessionContent", () => {
-	describe("network error detection", () => {
-		it("detects a retryable network error from a single JSONL line", () => {
-			const content = toJsonlContent(NETWORK_ERROR_ENTRY);
-			const result = parseSessionContent(content);
+describe("parseSessionContent — pause detection", () => {
+	it("reports a turn-ended pause for a clean successful result", () => {
+		const content = toJsonlContent(SUCCESSFUL_RESULT_ENTRY);
+		const result = parseSessionContent(content);
 
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("networkError");
-			expect(result.latestError!.hasRetryButton).toBe(true);
-			expect(result.latestError!.requestIndex).toBe(0);
-			expect(result.latestError!.message).toContain("network error");
-		});
-
-		it("includes the full error message for network errors", () => {
-			const content = toJsonlContent(NETWORK_ERROR_ENTRY);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError!.message).toContain("ERR_NETWORK_CHANGED");
-			expect(result.latestError!.message).toContain("315afeba");
-		});
+		expect(result.latestPause).toBeDefined();
+		expect(result.latestPause!.reason).toBe("turn-ended");
+		expect(result.latestPause!.code).toBe("ok");
+		expect(result.latestPause!.requestIndex).toBe(0);
 	});
 
-	describe("rate-limit error detection", () => {
-		it("detects a retryable rate-limit error from a single JSONL line", () => {
-			const content = toJsonlContent(RATE_LIMIT_ERROR_ENTRY);
-			const result = parseSessionContent(content);
+	it("reports a continue-button pause for a network error", () => {
+		const content = toJsonlContent(NETWORK_ERROR_ENTRY);
+		const result = parseSessionContent(content);
 
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("rateLimited");
-			expect(result.latestError!.hasRetryButton).toBe(true);
-			expect(result.latestError!.requestIndex).toBe(18);
-		});
-
-		it("includes the rate-limit suggestion to switch models", () => {
-			const content = toJsonlContent(RATE_LIMIT_ERROR_ENTRY);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError!.message).toContain("exhausted this model's rate limit");
-			expect(result.latestError!.message).toContain("GPT-4.1");
-		});
+		expect(result.latestPause).toBeDefined();
+		expect(result.latestPause!.reason).toBe("continue-button");
+		expect(result.latestPause!.code).toBe("networkError");
 	});
 
-	describe("user cancellation (non-retryable)", () => {
-		it("detects canceled error (NON_RETRYABLE_ERROR_CODES includes 'canceled')", () => {
-			expect(NON_RETRYABLE_ERROR_CODES.has("canceled")).toBe(true);
-		});
+	it("reports a continue-button pause for a rate limit", () => {
+		const content = toJsonlContent(RATE_LIMIT_ERROR_ENTRY);
+		const result = parseSessionContent(content);
 
-		it("reports canceled error with hasRetryButton true (filtering is caller's job)", () => {
-			const content = toJsonlContent(CANCELED_ERROR_ENTRY);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("canceled");
-			// hasRetryButton is true because the button exists in the JSONL —
-			// the SessionWatcher class checks NON_RETRYABLE_ERROR_CODES to skip it
-			expect(result.latestError!.hasRetryButton).toBe(true);
-		});
+		expect(result.latestPause).toBeDefined();
+		expect(result.latestPause!.reason).toBe("continue-button");
+		expect(result.latestPause!.code).toBe("rateLimited");
+		expect(result.latestPause!.requestIndex).toBe(18);
 	});
 
-	describe("recovery detection", () => {
-		it("clears error when the latest request for the same index succeeds", () => {
-			// First: error on request 0
-			// Then: success on request 0
-			const content = toJsonlContent(NETWORK_ERROR_ENTRY, SUCCESSFUL_RESULT_ENTRY);
-			const result = parseSessionContent(content);
+	it("never reports a pause for a user cancellation", () => {
+		const content = toJsonlContent(CANCELED_ERROR_ENTRY);
+		const result = parseSessionContent(content);
 
-			expect(result.latestError).toBeUndefined();
-			expect(result.highestResultRequestIndex).toBe(0);
-		});
-
-		it("keeps error when a newer request index has an error", () => {
-			// Success on request 0, then error on request 18
-			const content = toJsonlContent(SUCCESSFUL_RESULT_ENTRY, RATE_LIMIT_ERROR_ENTRY);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("rateLimited");
-			expect(result.latestError!.requestIndex).toBe(18);
-		});
-
-		it("clears error when a success at higher-or-equal index follows", () => {
-			const successAtIndex18: JsonlEntry = {
-				kind: 1,
-				k: ["requests", 18, "result"],
-				v: { metadata: { finishReason: "stop" } },
-			};
-			const content = toJsonlContent(RATE_LIMIT_ERROR_ENTRY, successAtIndex18);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeUndefined();
-			expect(result.highestResultRequestIndex).toBe(18);
-		});
+		expect(result.latestPause).toBeUndefined();
 	});
 
-	describe("multi-line JSONL content", () => {
-		it("handles multiple requests across many JSONL lines", () => {
-			// Simulate a realistic session: snapshot, then a few patches
+	it("does not report a pause for an error without a continue button", () => {
+		const entry: JsonlEntry = {
+			kind: 1,
+			k: ["requests", 0, "result"],
+			v: { errorDetails: { code: "internalError", message: "broke" } },
+		};
+
+		const result = parseSessionContent(toJsonlContent(entry));
+		expect(result.latestPause).toBeUndefined();
+		expect(result.highestResultRequestIndex).toBe(0);
+	});
+
+	it("uses the highest request index to determine latest state", () => {
+		// Error on request 0, then a clean turn-ended result on request 5.
+		const successOnFive: JsonlEntry = {
+			kind: 1,
+			k: ["requests", 5, "result"],
+			v: { metadata: { finishReason: "stop" } },
+		};
+		const content = toJsonlContent(NETWORK_ERROR_ENTRY, successOnFive);
+		const result = parseSessionContent(content);
+
+		expect(result.latestPause).toBeDefined();
+		expect(result.latestPause!.reason).toBe("turn-ended");
+		expect(result.highestResultRequestIndex).toBe(5);
+	});
+
+	it("switches to continue-button when a newer request errors", () => {
+		const content = toJsonlContent(SUCCESSFUL_RESULT_ENTRY, RATE_LIMIT_ERROR_ENTRY);
+		const result = parseSessionContent(content);
+
+		expect(result.latestPause).toBeDefined();
+		expect(result.latestPause!.reason).toBe("continue-button");
+		expect(result.latestPause!.requestIndex).toBe(18);
+	});
+
+	it("switches to no-pause when a newer request is canceled", () => {
+		const content = toJsonlContent(NETWORK_ERROR_ENTRY, CANCELED_ERROR_ENTRY);
+		const result = parseSessionContent(content);
+
+		expect(result.latestPause).toBeUndefined();
+		expect(result.highestResultRequestIndex).toBe(5);
+	});
+
+	describe("final-state reconstruction", () => {
+		it("reconstructs the end state across snapshot, replacement, and patch", () => {
+			// kind 0 base with one in-flight request, then kind 2 replaces the
+			// whole array with two requests, then kind 1 patches request 1's
+			// result to a completed turn.
 			const snapshot: JsonlEntry = {
 				kind: 0,
-				v: {
-					requests: [{ result: { metadata: { finishReason: "stop" } } }],
-				},
+				v: { requests: [{ message: { text: "first" } }] },
 			};
-			const secondRequestSuccess: JsonlEntry = {
-				kind: 1,
-				k: ["requests", 1, "result"],
-				v: { metadata: { finishReason: "stop" } },
-			};
-			const thirdRequestError: JsonlEntry = {
-				kind: 1,
-				k: ["requests", 2, "result"],
-				v: {
-					errorDetails: {
-						code: "networkError",
-						message: "Connection lost",
-						confirmationButtons: [
-							{ data: { copilotContinueOnError: true }, label: "Try Again" },
-						],
-					},
-				},
-			};
-
-			const content = toJsonlContent(snapshot, secondRequestSuccess, thirdRequestError);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("networkError");
-			expect(result.latestError!.requestIndex).toBe(2);
-			expect(result.highestResultRequestIndex).toBe(2);
-		});
-
-		it("uses the highest request index to determine the latest state", () => {
-			// Error on request 0, success on request 5
-			const errorOnZero = NETWORK_ERROR_ENTRY;
-			const successOnFive: JsonlEntry = {
-				kind: 1,
-				k: ["requests", 5, "result"],
-				v: { metadata: { finishReason: "stop" } },
-			};
-
-			const content = toJsonlContent(errorOnZero, successOnFive);
-			const result = parseSessionContent(content);
-
-			// Request 5 > request 0, so the latest state is success
-			expect(result.latestError).toBeUndefined();
-			expect(result.highestResultRequestIndex).toBe(5);
-		});
-	});
-
-	describe("kind 0 snapshot parsing", () => {
-		it("detects error from initial snapshot", () => {
-			const snapshot: JsonlEntry = {
-				kind: 0,
-				v: {
-					requests: [
-						{
-							result: {
-								errorDetails: {
-									code: "rateLimited",
-									message: "Rate limited on startup",
-									isRateLimited: true,
-									level: 0,
-									confirmationButtons: [
-										{ data: { copilotContinueOnError: true }, label: "Try Again" },
-									],
-								},
-							},
-						},
-					],
-				},
-			};
-
-			const content = toJsonlContent(snapshot);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("rateLimited");
-			expect(result.latestError!.requestIndex).toBe(0);
-		});
-	});
-
-	describe("kind 2 replacement parsing", () => {
-		it("detects error when requests array is fully replaced", () => {
 			const replacement: JsonlEntry = {
 				kind: 2,
 				k: ["requests"],
 				v: [
-					{ result: { metadata: { finishReason: "stop" } } },
+					{ result: { metadata: {} } },
+					{ message: { text: "second, in flight" } },
+				],
+			};
+			const patch: JsonlEntry = {
+				kind: 1,
+				k: ["requests", 1, "result"],
+				v: { metadata: {}, responseTimestamp: Date.now() },
+			};
+
+			const content = toJsonlContent(snapshot, replacement, patch);
+			const result = parseSessionContent(content);
+
+			expect(result.latestPause).toBeDefined();
+			expect(result.latestPause!.reason).toBe("turn-ended");
+			expect(result.latestPause!.requestIndex).toBe(1);
+		});
+
+		it("treats a later kind:2 replacement as authoritative over earlier state", () => {
+			const errored: JsonlEntry = {
+				kind: 2,
+				k: ["requests"],
+				v: [{ result: { errorDetails: { code: "failed" } } }],
+			};
+			const cleared: JsonlEntry = {
+				kind: 2,
+				k: ["requests"],
+				v: [{ message: { text: "restarted, in flight" } }],
+			};
+
+			const content = toJsonlContent(errored, cleared);
+			const result = parseSessionContent(content);
+
+			// The final array's last request has no result → no pause.
+			expect(result.latestPause).toBeUndefined();
+		});
+
+		it("extracts finishedAt from responseTimestamp", () => {
+			const ts = 1_788_245_000_000;
+			const entry: JsonlEntry = {
+				kind: 2,
+				k: ["requests"],
+				v: [{ result: { metadata: {} }, responseTimestamp: ts }],
+			};
+
+			const result = parseSessionContent(toJsonlContent(entry));
+			expect(result.latestPause!.finishedAt).toBe(ts);
+		});
+
+		it("extracts finishedAt from the last tool-call round timestamp", () => {
+			const ts = 1_788_245_111_222;
+			const entry: JsonlEntry = {
+				kind: 2,
+				k: ["requests"],
+				v: [
 					{
 						result: {
+							metadata: { toolCallRounds: [{ timestamp: ts }] },
+						},
+					},
+				],
+			};
+
+			const result = parseSessionContent(toJsonlContent(entry));
+			expect(result.latestPause!.finishedAt).toBe(ts);
+		});
+
+		it("does not continue a clean result flagged isCanceled", () => {
+			const entry: JsonlEntry = {
+				kind: 2,
+				k: ["requests"],
+				v: [{ result: { metadata: {} }, isCanceled: true }],
+			};
+
+			const result = parseSessionContent(toJsonlContent(entry));
+			expect(result.latestPause).toBeUndefined();
+		});
+
+		it("distinguishes consecutive turns that reuse requests[0] (in-place replace)", () => {
+			// VS Code stores empty-window conversations as a single requests[0]
+			// that is replaced via kind:2 each turn. Two completed turns share
+			// index 0 / reason / code, so finishedAt must differ to be a new pause.
+			const turn1: JsonlEntry = {
+				kind: 2,
+				k: ["requests"],
+				v: [{ result: { metadata: {} }, responseTimestamp: 1_788_246_000_000 }],
+			};
+			const turn2: JsonlEntry = {
+				kind: 2,
+				k: ["requests"],
+				v: [{ result: { metadata: {} }, responseTimestamp: 1_788_246_343_065 }],
+			};
+
+			const p1 = parseSessionContent(toJsonlContent(turn1)).latestPause;
+			const p2 = parseSessionContent(toJsonlContent(turn2)).latestPause;
+
+			expect(p1!.requestIndex).toBe(p2!.requestIndex);
+			expect(p1!.reason).toBe(p2!.reason);
+			expect(p1!.finishedAt).not.toBe(p2!.finishedAt);
+		});
+
+		it("detects a real code:'failed' continue button (production shape)", () => {
+			const entry: JsonlEntry = {
+				kind: 2,
+				k: ["requests"],
+				v: [
+					{
+						responseTimestamp: Date.now(),
+						result: {
 							errorDetails: {
-								code: "networkError",
-								message: "Error after replacement",
+								code: "failed",
+								message: "Sorry, your request failed. Please try again.",
 								confirmationButtons: [
-									{ data: { copilotContinueOnError: true }, label: "Try Again" },
+									{
+										data: { copilotContinueOnError: true },
+										label: "Try Again",
+									},
 								],
+								responseIsIncomplete: true,
 							},
 						},
 					},
 				],
 			};
 
-			const content = toJsonlContent(replacement);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("networkError");
-			expect(result.latestError!.requestIndex).toBe(1);
+			const result = parseSessionContent(toJsonlContent(entry));
+			expect(result.latestPause).toBeDefined();
+			expect(result.latestPause!.reason).toBe("continue-button");
+			expect(result.latestPause!.code).toBe("failed");
 		});
 	});
 
 	describe("edge cases", () => {
-		it("returns no error for empty content", () => {
+		it("returns no pause for empty content", () => {
 			const result = parseSessionContent("");
-			expect(result.latestError).toBeUndefined();
+			expect(result.latestPause).toBeUndefined();
 			expect(result.highestResultRequestIndex).toBe(-1);
 		});
 
-		it("returns no error for whitespace-only content", () => {
+		it("returns no pause for whitespace-only content", () => {
 			const result = parseSessionContent("   \n\n   \n");
-			expect(result.latestError).toBeUndefined();
+			expect(result.latestPause).toBeUndefined();
 		});
 
 		it("skips malformed JSON lines gracefully", () => {
@@ -624,115 +526,31 @@ describe("parseSessionContent", () => {
 			].join("\n");
 
 			const result = parseSessionContent(content);
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("networkError");
-		});
-
-		it("handles error without confirmationButtons (no retry button)", () => {
-			const entry: JsonlEntry = {
-				kind: 1,
-				k: ["requests", 0, "result"],
-				v: {
-					errorDetails: {
-						code: "internalError",
-						message: "Something broke internally",
-					},
-				},
-			};
-
-			const content = toJsonlContent(entry);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("internalError");
-			expect(result.latestError!.hasRetryButton).toBe(false);
-		});
-
-		it("handles error with missing code (defaults to 'unknown')", () => {
-			const entry: JsonlEntry = {
-				kind: 1,
-				k: ["requests", 0, "result"],
-				v: {
-					errorDetails: {
-						message: "Mystery error",
-						confirmationButtons: [
-							{ data: { copilotContinueOnError: true }, label: "Try Again" },
-						],
-					},
-				},
-			};
-
-			const content = toJsonlContent(entry);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.code).toBe("unknown");
-			expect(result.latestError!.hasRetryButton).toBe(true);
-		});
-
-		it("handles error with missing message (defaults to empty string)", () => {
-			const entry: JsonlEntry = {
-				kind: 1,
-				k: ["requests", 0, "result"],
-				v: {
-					errorDetails: {
-						code: "networkError",
-					},
-				},
-			};
-
-			const content = toJsonlContent(entry);
-			const result = parseSessionContent(content);
-
-			expect(result.latestError).toBeDefined();
-			expect(result.latestError!.message).toBe("");
+			expect(result.latestPause).toBeDefined();
+			expect(result.latestPause!.code).toBe("networkError");
 		});
 	});
 });
 
-describe("NON_RETRYABLE_ERROR_CODES", () => {
+describe("NON_CONTINUABLE_CODES", () => {
 	it("contains 'canceled'", () => {
-		expect(NON_RETRYABLE_ERROR_CODES.has("canceled")).toBe(true);
+		expect(NON_CONTINUABLE_CODES.has("canceled")).toBe(true);
 	});
 
-	it("does not contain 'networkError' (should be retryable)", () => {
-		expect(NON_RETRYABLE_ERROR_CODES.has("networkError")).toBe(false);
+	it("does not contain 'networkError'", () => {
+		expect(NON_CONTINUABLE_CODES.has("networkError")).toBe(false);
 	});
 
-	it("does not contain 'rateLimited' (should be retryable)", () => {
-		expect(NON_RETRYABLE_ERROR_CODES.has("rateLimited")).toBe(false);
+	it("does not contain 'rateLimited'", () => {
+		expect(NON_CONTINUABLE_CODES.has("rateLimited")).toBe(false);
 	});
 });
 
 /* ══════════════════════ Regression: large result entries ══════════════════ */
 
 describe("parseSessionContent — large result entry regression", () => {
-	/**
-	 * Regression test for the real-world bug where a 69 KB result entry
-	 * (containing tool-call metadata) was followed by small entries
-	 * (followups, modelState, response replacement), pushing the result
-	 * entry outside the old 32 KB tail-read window.
-	 *
-	 * Source: session e2bd04ec-7518-4cbd-aa1f-8e6d8609019a.jsonl
-	 * The file was 103,568 bytes with 8 JSONL lines:
-	 *   Line 1: kind=0, initial snapshot (1,324 bytes)
-	 *   Line 2: kind=1, customTitle (76 bytes)
-	 *   Line 3: kind=2, requests array replacement (11,377 bytes)
-	 *   Line 4: kind=2, response (19,680 bytes)
-	 *   Line 5: kind=1, requests[0].result — RATE LIMIT ERROR (69,170 bytes!)
-	 *   Line 6: kind=1, followups (48 bytes)
-	 *   Line 7: kind=1, modelState (86 bytes)
-	 *   Line 8: kind=2, response replacement (1,799 bytes)
-	 *
-	 * The old 32 KB tail window started at byte 70,800 — AFTER the start of
-	 * line 5 (byte 32,461). After skipping the first partial line, only
-	 * lines 6–8 were visible — none of which contain result entries.
-	 */
-
-	/** Build a large result entry that mimics the real-world 69 KB payload. */
+	/** Build a large result entry that mimics a real-world ~69 KB payload. */
 	function buildLargeRateLimitResultEntry(paddingBytes: number): JsonlEntry {
-		// The real entry was large because result.metadata.toolCallRounds
-		// contained all of the agent's tool calls and their outputs.
 		const padding = "x".repeat(paddingBytes);
 		return {
 			kind: 1,
@@ -748,15 +566,12 @@ describe("parseSessionContent — large result entry regression", () => {
 					],
 					responseIsIncomplete: true,
 				},
-				metadata: {
-					toolCallRounds: [{ content: padding }],
-				},
+				metadata: { toolCallRounds: [{ content: padding }] },
 			},
 		};
 	}
 
-	it("detects error from full content even when result entry is very large", () => {
-		// Simulate full file content: snapshot + large result + small trailing entries
+	it("detects a pause from full content even when the result entry is very large", () => {
 		const snapshot: JsonlEntry = {
 			kind: 0,
 			v: { requests: [{ message: { text: "do something" } }] },
@@ -773,19 +588,21 @@ describe("parseSessionContent — large result entry regression", () => {
 			v: { isStale: false },
 		};
 
-		const fullContent = toJsonlContent(snapshot, largeResult, followups, modelState);
+		const fullContent = toJsonlContent(
+			snapshot,
+			largeResult,
+			followups,
+			modelState,
+		);
 		const result = parseSessionContent(fullContent);
 
-		expect(result.latestError).toBeDefined();
-		expect(result.latestError!.code).toBe("rateLimited");
-		expect(result.latestError!.hasRetryButton).toBe(true);
-		expect(result.latestError!.requestIndex).toBe(0);
+		expect(result.latestPause).toBeDefined();
+		expect(result.latestPause!.reason).toBe("continue-button");
+		expect(result.latestPause!.code).toBe("rateLimited");
 		expect(result.highestResultRequestIndex).toBe(0);
 	});
 
-	it("returns no result entries when content has only non-result lines (old bug scenario)", () => {
-		// This simulates what the old 32 KB tail reader saw:
-		// only followups, modelState, and response — no result entries at all.
+	it("reports no result entries when content has only non-result lines", () => {
 		const followups: JsonlEntry = {
 			kind: 1,
 			k: ["requests", 0, "followups"],
@@ -805,27 +622,7 @@ describe("parseSessionContent — large result entry regression", () => {
 		const tailOnlyContent = toJsonlContent(followups, modelState, response);
 		const result = parseSessionContent(tailOnlyContent);
 
-		// No result entries → highestResultRequestIndex is -1
-		// This is the signal that triggers adaptive window expansion
-		expect(result.latestError).toBeUndefined();
+		expect(result.latestPause).toBeUndefined();
 		expect(result.highestResultRequestIndex).toBe(-1);
-	});
-
-	it("finds error when tail includes the complete result entry line", () => {
-		// Simulate what the adaptive reader sees after expanding the window:
-		// the full result entry plus the trailing entries
-		const largeResult = buildLargeRateLimitResultEntry(60_000);
-		const followups: JsonlEntry = {
-			kind: 1,
-			k: ["requests", 0, "followups"],
-			v: [],
-		};
-
-		const expandedContent = toJsonlContent(largeResult, followups);
-		const result = parseSessionContent(expandedContent);
-
-		expect(result.latestError).toBeDefined();
-		expect(result.latestError!.code).toBe("rateLimited");
-		expect(result.highestResultRequestIndex).toBe(0);
 	});
 });

@@ -6,20 +6,29 @@ import * as vscode from "vscode";
  */
 export interface ResolvedConfig {
   enabled: boolean;
-  maxRetries: number;
+  continueMessage: string;
+  maxContinues: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  verboseLogging: boolean;
 }
 
-const SECTION = "copilotAutoRetry";
+const SECTION = "copilotLongRun";
+
+const DEFAULT_CONTINUE_MESSAGE = "Keep going until the task is fully complete.";
 
 export function readConfig(): ResolvedConfig {
   const configuration = vscode.workspace.getConfiguration(SECTION);
   return {
     enabled: configuration.get<boolean>("enabled", true),
-    maxRetries: configuration.get<number>("maxRetries", 3),
+    continueMessage: configuration.get<string>(
+      "continueMessage",
+      DEFAULT_CONTINUE_MESSAGE,
+    ),
+    maxContinues: configuration.get<number>("maxContinues", 3),
     baseDelayMs: configuration.get<number>("baseDelayMs", 2000),
     maxDelayMs: configuration.get<number>("maxDelayMs", 30000),
+    verboseLogging: configuration.get<boolean>("verboseLogging", false),
   };
 }
 
