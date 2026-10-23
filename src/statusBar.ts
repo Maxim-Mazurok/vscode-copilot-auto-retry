@@ -33,6 +33,7 @@ export class StatusBar implements vscode.Disposable {
     engineState: RetryEngineState,
     currentAttempt?: number,
     maxAttempts?: number,
+    nextRetryAt?: number,
   ): void {
     const config = readConfig();
 
@@ -53,7 +54,9 @@ export class StatusBar implements vscode.Disposable {
       case "waiting":
         this.statusBarItem.text = `$(clock) Retry ${currentAttempt ?? "?"}/${maxAttempts ?? "?"}`;
         this.statusBarItem.tooltip =
-          "Copilot Auto-Retry: waiting for backoff timer before next attempt.";
+          nextRetryAt
+            ? `Copilot Auto-Retry: next attempt at ${new Date(nextRetryAt).toLocaleString()}. Click to disable.`
+            : "Copilot Auto-Retry: waiting for backoff timer before next attempt.";
         this.statusBarItem.backgroundColor = new vscode.ThemeColor(
           "statusBarItem.warningBackground",
         );

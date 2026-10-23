@@ -79,7 +79,7 @@ export function activate(context: vscode.ExtensionContext): void {
     logger.info(
       `Session ${sessionId} recovered — cancelling retry if active`,
     );
-    retryEngine.cancelActiveCycle(`session ${sessionId} recovered`);
+    retryEngine.cancelActiveCycle(`session ${sessionId} recovered`, sessionId);
   });
 
   // ── Secondary signal: network recovery ─────────────────────────────────
@@ -128,6 +128,7 @@ export function activate(context: vscode.ExtensionContext): void {
       state,
       retryEngine.getCurrentAttempt(),
       config.maxRetries,
+      retryEngine.getNextRetryAt(),
     );
   });
 
@@ -183,6 +184,8 @@ export function activate(context: vscode.ExtensionContext): void {
         `Network: ${networkMonitor.getState()}`,
         `Max retries: ${config.maxRetries}`,
         `Base delay: ${config.baseDelayMs}ms`,
+        `Daily quota fallback: ${config.dailyQuotaRetryDelayHours} hours`,
+        `Next retry: ${retryEngine.getNextRetryAt() ? new Date(retryEngine.getNextRetryAt()!).toLocaleString() : "none"}`,
         `Consecutive failures: ${consecutiveFailures}`,
         `Detection: session file watcher + network monitor`,
         `Retry method: chat submit (focus + follow-up prompt)`,

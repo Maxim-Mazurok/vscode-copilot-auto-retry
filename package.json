@@ -49,6 +49,13 @@
           "minimum": 5000,
           "maximum": 120000,
           "description": "Maximum delay cap in milliseconds for exponential backoff"
+        },
+        "copilotAutoRetry.dailyQuotaRetryDelayHours": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 24,
+          "description": "Hours to wait before retrying a daily quota or credit limit when its reset duration cannot be read. A reported reset duration takes precedence over this setting and the normal backoff cap."
         }
       }
     },

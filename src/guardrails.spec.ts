@@ -11,6 +11,7 @@ vi.mock("./configuration", () => ({
 		maxRetries: 3,
 		baseDelayMs: 2000,
 		maxDelayMs: 30_000,
+		dailyQuotaRetryDelayHours: 6,
 	}),
 }));
 
@@ -33,6 +34,7 @@ describe("Guardrails", () => {
 			maxRetries: 3,
 			baseDelayMs: 2000,
 			maxDelayMs: 30_000,
+			dailyQuotaRetryDelayHours: 6,
 		});
 		vi.useFakeTimers();
 	});
@@ -54,6 +56,7 @@ describe("Guardrails", () => {
 				maxRetries: 3,
 				baseDelayMs: 2000,
 				maxDelayMs: 30_000,
+				dailyQuotaRetryDelayHours: 6,
 			});
 
 			const guardrails = createGuardrails();
@@ -178,6 +181,7 @@ describe("Guardrails", () => {
 				maxRetries: 3,
 				baseDelayMs: 100,
 				maxDelayMs: 30_000,
+				dailyQuotaRetryDelayHours: 6,
 			});
 
 			const guardrails = createGuardrails();

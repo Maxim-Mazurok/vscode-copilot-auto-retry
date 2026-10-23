@@ -137,6 +137,8 @@ The `Guardrails` class enforces multiple safety constraints:
 
 Backoff calculation uses exponential delay with jitter: `base * 2^(attempt-1) * jitter(0.8..1.2)`, clamped to `maxDelayMs`.
 
+Daily quota/credit errors use `quotaRetry.ts` to recognize daily limits and parse relative reset durations from the full error message. The trigger carries an absolute `retryNotBefore` deadline, so normal backoff cannot retry before the reset. If parsing fails, `dailyQuotaRetryDelayHours` supplies a six-hour default. Daily quota detection does not require a retry button; cancellation errors remain excluded. Long waits retain the same guardrails and active-session check as short retries. Recovery cancels only the cycle belonging to that session.
+
 ## Known Limitations
 
 1. **Session file format is undocumented** — The JSONL format (`kind: 0/1/2`) was reverse-engineered from real session files. VS Code could change this format without notice. The extension degrades gracefully if parsing fails (no crash, just no detection).

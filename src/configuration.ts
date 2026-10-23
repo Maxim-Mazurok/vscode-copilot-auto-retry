@@ -9,6 +9,7 @@ export interface ResolvedConfig {
   maxRetries: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  dailyQuotaRetryDelayHours: number;
 }
 
 const SECTION = "copilotAutoRetry";
@@ -20,6 +21,7 @@ export function readConfig(): ResolvedConfig {
     maxRetries: configuration.get<number>("maxRetries", 3),
     baseDelayMs: configuration.get<number>("baseDelayMs", 2000),
     maxDelayMs: configuration.get<number>("maxDelayMs", 30000),
+    dailyQuotaRetryDelayHours: configuration.get<number>("dailyQuotaRetryDelayHours", 6),
   };
 }
 

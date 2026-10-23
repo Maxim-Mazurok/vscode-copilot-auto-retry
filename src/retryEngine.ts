@@ -4,6 +4,7 @@ import { readConfig } from "./configuration";
 import { Guardrails } from "./guardrails";
 import { ActiveSessionResolver } from "./activeSessionResolver";
 import { SessionError } from "./sessionWatcher";
+import { isDailyQuotaError, parseQuotaResetDelay } from "./quotaRetry";
 
 /**
  * Manages retry attempts for detected Copilot errors using exponential backoff.
@@ -67,6 +68,8 @@ export interface RetryTrigger {
   detail: string;
   /** When the trigger was created. */
   timestamp: number;
+  /** Earliest retry time for a daily quota failure. */
+  retryNotBefore?: number;
 }
 
 interface ActiveRetryCycle {
@@ -75,6 +78,7 @@ interface ActiveRetryCycle {
   maxAttempts: number;
   timer: ReturnType<typeof setTimeout> | undefined;
   cancelled: boolean;
+  nextRetryAt?: number;
 }
 
 export class RetryEngine implements vscode.Disposable {
@@ -111,16 +115,25 @@ export class RetryEngine implements vscode.Disposable {
     return this.activeCycle?.attemptNumber ?? 0;
   }
 
+  getNextRetryAt(): number | undefined {
+    return this.activeCycle?.nextRetryAt;
+  }
+
   /**
    * Create a RetryTrigger from a SessionError detected by the session watcher.
    */
   static triggerFromSessionError(sessionError: SessionError): RetryTrigger {
+    const quotaDelay = isDailyQuotaError(sessionError.errorCode, sessionError.message)
+      ? parseQuotaResetDelay(sessionError.message) ??
+        Math.min(24, Math.max(1, readConfig().dailyQuotaRetryDelayHours || 6)) * 3_600_000
+      : undefined;
     return {
       source: "session-error",
       errorCode: sessionError.errorCode,
       sessionId: sessionError.sessionId,
       detail: `Session ${sessionError.sessionId}: ${sessionError.message.substring(0, 120)}`,
       timestamp: sessionError.detectedAt,
+      retryNotBefore: quotaDelay === undefined ? undefined : sessionError.detectedAt + quotaDelay,
     };
   }
 
@@ -159,13 +172,15 @@ export class RetryEngine implements vscode.Disposable {
       return;
     }
 
-    if (!this.guardrails.canRetry()) {
+    const config = readConfig();
+    // Temporary rate/cooldown restrictions must not discard a future quota wait.
+    // Every actual attempt still passes canRetry() when the timer expires.
+    const hasFutureDeadline = (trigger.retryNotBefore ?? 0) > Date.now();
+    if (!config.enabled || (!hasFutureDeadline && !this.guardrails.canRetry())) {
       this.logger.debug("Guardrails blocked retry cycle start");
       this.setState("cooldown");
       return;
     }
-
-    const config = readConfig();
 
     this.activeCycle = {
       trigger,
@@ -187,8 +202,9 @@ export class RetryEngine implements vscode.Disposable {
    * Cancel any active retry cycle. Called when the user disables the extension,
    * when the session watcher detects recovery, or when the error resolves.
    */
-  cancelActiveCycle(reason: string): void {
-    if (!this.activeCycle) {
+  cancelActiveCycle(reason: string, sessionId?: string): void {
+    if (!this.activeCycle || (sessionId && this.activeCycle.trigger.sessionId &&
+      this.activeCycle.trigger.sessionId !== sessionId)) {
       return;
     }
 
@@ -225,7 +241,11 @@ export class RetryEngine implements vscode.Disposable {
       return;
     }
 
-    const delayMs = this.guardrails.calculateDelay(cycle.attemptNumber);
+    const delayMs = Math.max(
+      this.guardrails.calculateDelay(cycle.attemptNumber),
+      (cycle.trigger.retryNotBefore ?? 0) - Date.now(),
+    );
+    cycle.nextRetryAt = Date.now() + delayMs;
     this.logger.info(
       `Retry attempt ${cycle.attemptNumber}/${cycle.maxAttempts} scheduled in ${delayMs}ms`,
     );
@@ -265,6 +285,9 @@ export class RetryEngine implements vscode.Disposable {
       const sessionIsActive = await this.activeSessionResolver.isSessionActive(
         cycle.trigger.sessionId,
       );
+      if (cycle.cancelled) {
+        return;
+      }
       if (!sessionIsActive) {
         this.cancelActiveCycle(
           `errored session ${cycle.trigger.sessionId} is no longer the active session`,
@@ -273,6 +296,7 @@ export class RetryEngine implements vscode.Disposable {
       }
     }
 
+    cycle.nextRetryAt = undefined;
     this.setState("retrying");
     this.guardrails.recordRetryAttempt();
 

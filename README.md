@@ -31,6 +31,7 @@ This extension fixes that. It **automatically retries** transient failures with 
 - **Multi-window safe** — Each VS Code window only monitors its own workspace sessions; retries never leak across windows
 - **Multi-session safe** — Verifies the errored session is still the active one before retrying, so it won't submit a retry prompt into the wrong conversation
 - **Exponential backoff with jitter** — Spreads retries over time to avoid hammering the API (2s → 4s → 8s → ...)
+- **Daily quota recovery** — Waits for a reported quota reset duration, or six hours by default, before retrying daily credit/quota limits
 - **Safety guardrails** — Hard rate limits (max 15 retries/minute), cooldown periods, and a kill switch to prevent runaway loops
 - **Status bar indicator** — Shows current state at a glance: idle, waiting, retrying, cooldown, or disabled
 - **Manual retry command** — Trigger a retry immediately with `Cmd+Shift+R` / `Ctrl+Shift+R`
@@ -76,18 +77,22 @@ All settings are under `copilotAutoRetry.*` in VS Code Settings.
 | `copilotAutoRetry.maxRetries` | `3` | Maximum retry attempts per failure (1–10) |
 | `copilotAutoRetry.baseDelayMs` | `2000` | Base delay before first retry in milliseconds (500–15,000) |
 | `copilotAutoRetry.maxDelayMs` | `30000` | Maximum backoff cap in milliseconds (5,000–120,000) |
+| `copilotAutoRetry.dailyQuotaRetryDelayHours` | `6` | Fallback wait for daily quota/credit limits in hours (1–24); a reported reset duration takes precedence |
+
+Daily quota errors use a separate long wait that is not capped by `maxDelayMs`. English relative reset durations such as `quota resets in 2 hours and 30 minutes` or `resets in 2h 30m` are supported. Missing or unsupported reset formats use `dailyQuotaRetryDelayHours`. Hover over the waiting status item or run **Show Status** to see when the next attempt is scheduled. Disabling the extension or recovery of the affected session cancels the wait; network recovery does not shorten it. The errored session must still be active when the retry runs.
 
 ## What Errors Does It Handle?
 
-The extension detects errors by reading chat session JSONL files. It retries errors that have a `copilotContinueOnError` confirmation button (the "Try Again" button).
+The extension detects errors by reading chat session JSONL files. It retries errors that have a `copilotContinueOnError` confirmation button (the "Try Again" button). Daily quota failures are also detected from error codes/messages containing `daily` and `quota`, `credit`, or `limit`, even without that button.
 
 | Error Type | Error Code | Retried? |
 |---|---|---|
 | **Rate limits** | `rateLimited` | Yes |
 | **Network errors** | `networkError` | Yes |
+| **Daily quota/credit limits** | Daily quota code or message | Yes, after the reset duration or configured fallback |
 | **User cancellation** | `canceled` | No (user-initiated) |
 
-Other error codes with a "Try Again" button are also retried. Errors without the button are ignored.
+Other error codes with a "Try Again" button are also retried. Other errors without the button are ignored.
 
 ## Status Bar
 
@@ -110,6 +115,7 @@ Click the status bar item to toggle the extension on/off.
 - **Relies on VS Code internal file layout** — Session files are stored in `workspaceStorage/<hash>/chatSessions/`. If VS Code changes this layout, the extension will stop detecting errors (but won't break anything — it degrades gracefully).
 - **Active session check requires `sqlite3` CLI** — On macOS and most Linux systems, `sqlite3` is pre-installed. On systems where it's missing, the active-session verification is skipped (retry proceeds but without the safety check).
 - **Single retry at a time** — If multiple errors occur across different sessions in the same window, only the first triggers a retry cycle. Subsequent errors are ignored until the cycle completes.
+- **Long waits require the window to remain open** — Pending timers are not persisted across window reloads or restarts; startup scans the latest session again and calculates a new wait from its error message.
 
 ## Requirements
 
